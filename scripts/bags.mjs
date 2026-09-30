@@ -1,0 +1,23 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const page = await (await browser.newContext({ viewport: { width: 1440, height: 860 } })).newPage();
+const errors = [];
+page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+const shot = async n => { await page.screenshot({ path: `shots/${n}.png` }); console.log('shot', n); };
+await page.goto('http://127.0.0.1:5173/');
+await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model, null, { timeout: 30000 });
+await page.click('.tabs button[data-tab=build]'); await page.waitForTimeout(800);
+await shot('11-bags-sealed');
+const info = await page.evaluate(() => [...document.querySelectorAll('.bag')].map(b => b.textContent));
+console.log(info);
+await page.click('.bag.can');
+for (const t of [700, 900, 900, 1200]) { await page.waitForTimeout(t); await shot(`12-rip-${t}-${Date.now()%1000}`); }
+await page.waitForTimeout(6000);
+await shot('13-pile-settled');
+const st = await page.evaluate(() => { const p = window.__bf.viewer.pile; return { count: p.count(), snap: p.snapshot().slice(0,3) }; });
+console.log(JSON.stringify(st));
+console.log('errors:', errors);
+await browser.close();

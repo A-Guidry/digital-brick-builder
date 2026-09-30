@@ -1,0 +1,27 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const page = await (await browser.newContext({ viewport: { width: 1440, height: 860 } })).newPage();
+const errors = [];
+page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+const shot = async n => { await page.screenshot({ path: `shots/${n}.png` }); console.log('shot', n); };
+await page.goto('http://127.0.0.1:5173/');
+await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model, null, { timeout: 30000 });
+await page.click('.tabs button[data-tab=build]');
+const fps = await page.evaluate(() => new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 > 2000) r(n / 2); else requestAnimationFrame(f); }; f(); }));
+console.log('fps', fps);
+await page.click('.bag.can');
+await page.waitForFunction(() => window.__bf.viewer.pile.count() >= 18, null, { timeout: 90000 });
+await page.waitForTimeout(6000);
+await shot('13-pile-settled');
+const snap = () => page.evaluate(() => window.__bf.viewer.pile.snapshot().map(s => [s.x, s.z]));
+const proj = () => page.evaluate(() => { const v = window.__bf.viewer; const s = v.pile.snapshot(); return s.map(b => v.project ? v.project(b.x, b.y, b.z) : null); });
+console.log('has project', (await proj())[0]);
+const a = await snap();
+// stir with mouse: find a brick screen pos
+const pos = await page.evaluate(() => { const v = window.__bf.viewer; const s = v.pile.snapshot()[0]; const THREE = null; return v.toScreen ? v.toScreen(s.x, s.y, s.z) : null; });
+console.log('toScreen', pos);
+console.log('errors', errors);
+await browser.close();

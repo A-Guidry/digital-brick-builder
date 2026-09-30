@@ -1,0 +1,11 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const page = await browser.newPage({ viewport: { width: 1440, height: 860 } });
+await page.goto('file:///home/claude/brickforge/dist/index.html?preset=heart');
+await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model);
+await page.waitForTimeout(1200); await page.click('#s-all'); await page.waitForTimeout(800);
+console.log('overflow?', await page.evaluate(() => [document.documentElement.scrollWidth, window.innerWidth]));
+await page.screenshot({ path: 'shots/05-heart-final.png' });
+await browser.close();

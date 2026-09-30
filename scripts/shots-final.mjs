@@ -1,0 +1,11 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const b = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader','--enable-unsafe-swiftshader','--use-gl=angle'] });
+const p = await (await b.newContext({ viewport: { width: 1440, height: 860 } })).newPage(); p.setDefaultTimeout(90000);
+await p.goto('http://127.0.0.1:5173/', { timeout: 120000 }); await p.waitForFunction(() => window.__bf?.model);
+await p.click('#btn-profile'); await p.fill('#pf-name', 'Anthony'); await p.waitForTimeout(600); await p.screenshot({ path: 'shots/f1-profile.png' });
+await p.click('#pf-close'); await p.click('.tabs button[data-tab=saved]'); await p.waitForTimeout(600); await p.screenshot({ path: 'shots/f2-saved-footer.png' });
+const m = await (await b.newContext({ viewport: { width: 375, height: 740 } })).newPage();
+await m.goto('http://127.0.0.1:5173/', { timeout: 120000 }); await m.waitForFunction(() => window.__bf?.model); await m.waitForTimeout(600); await m.screenshot({ path: 'shots/f3-phone.png', fullPage: true });
+await b.close();

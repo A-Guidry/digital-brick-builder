@@ -1,0 +1,81 @@
+/* Phone / small-tablet layout: app-style. The 3D view stays fixed at the top, the panel under it scrolls,
+   and one bottom bar switches sections. Desktop layout is untouched (everything below is inside media queries). */
+#mnav { display: none; }
+
+@media (max-width: 900px) {
+  html, body { overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+  :root[data-theme] #app {
+    height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; gap: 8px;
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 0 max(8px, env(safe-area-inset-left));
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(180px, 38dvh) minmax(0, 1fr) auto auto;
+  }
+  :root[data-theme] #app[data-tab=build] { grid-template-rows: auto minmax(220px, 48dvh) minmax(0, 1fr) auto auto; }
+  @media (max-height: 700px) { :root[data-theme] #app { grid-template-rows: auto minmax(160px, 34dvh) minmax(0, 1fr) auto auto; } :root[data-theme] #app[data-tab=build] { grid-template-rows: auto minmax(200px, 44dvh) minmax(0, 1fr) auto auto; } }
+  :root[data-theme] header { grid-row: 1; padding: 6px 10px; }
+  :root[data-theme] #stage { grid-row: 2; min-height: 0; }
+  :root[data-theme] #left, :root[data-theme] #right {
+    grid-row: 3; grid-column: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+    border: 0; border-radius: var(--r); background: var(--panel); box-shadow: var(--shadow); overscroll-behavior: contain;
+  }
+  #app[data-panel=create] #right { display: none; }
+  #app[data-panel=tab] #left { display: none; }
+  /* the top tab strip is replaced by the bottom bar */
+  :root[data-theme] #right .tabs { display: none; }
+  :root[data-theme] #right { display: block; }
+  :root[data-theme] .pane { overflow: visible; flex: none; padding: 12px; }
+  :root[data-theme] #foot { grid-row: 4; grid-column: 1; padding: 0; font-size: 11px; max-height: 40dvh; overflow: auto; }
+  :root[data-theme] #foot summary { padding: 4px 12px; }
+
+  #mnav {
+    display: grid; grid-template-columns: repeat(6, 1fr); grid-row: 5; grid-column: 1;
+    margin: 0 calc(-1 * max(8px, env(safe-area-inset-left))) 0 calc(-1 * max(8px, env(safe-area-inset-right)));
+    background: var(--panel); border-top: 1px solid var(--line); padding: 4px 4px max(6px, env(safe-area-inset-bottom));
+  }
+  #mnav button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    min-height: 50px; padding: 4px 0; border: 0; border-radius: 10px; background: transparent; color: var(--dim);
+    font-size: 11px; font-weight: 600; box-shadow: none;
+  }
+  #mnav button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  #mnav button.on { color: var(--accent-strong); background: var(--accent-soft); }
+  #mnav button:hover:not(.on) { background: var(--panel-2); color: var(--ink); }
+
+  /* header: compact, never overflows */
+  :root[data-theme] header .sub { display: none; }
+  :root[data-theme] header #looks button, :root[data-theme] header button { padding: 6px 10px; min-height: 34px; }
+
+  /* keep the canvas from scrolling the page and stop the long-press menu while dragging bricks */
+  #view { touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+  #hud { font-size: 11px; }
+  dialog { width: min(440px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); overflow: auto; }
+  .keys-hint, #tab-steps .dim:last-child { display: none; }
+}
+
+/* touch devices: comfortable targets, and 16px inputs so iOS does not zoom the page on focus */
+@media (pointer: coarse) {
+  button { min-height: 40px; }
+  :root[data-theme] .item button { min-height: 36px; padding: 6px 12px; }
+  :root[data-theme] .bar button { min-height: 40px; min-width: 40px; }
+  textarea, input[type=text], input[type=password], input:not([type]), select { font-size: 16px; }
+  input[type=range] { height: 36px; margin: 2px 0; }
+  input[type=range]::-webkit-slider-thumb { width: 26px; height: 26px; }
+  input[type=range]::-moz-range-thumb { width: 26px; height: 26px; }
+  .piece { padding: 8px; }
+  .bag { min-height: 58px; }
+  dialog .chk input { width: 20px; height: 20px; }
+}
+
+/* phones held sideways: view on the left, panel on the right, bar along the bottom */
+@media (max-width: 900px) and (max-height: 520px) and (orientation: landscape) {
+  :root[data-theme] #app, :root[data-theme] #app[data-tab=build] {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto;
+  }
+  :root[data-theme] header { grid-column: 1 / -1; grid-row: 1; }
+  :root[data-theme] #stage { grid-column: 1; grid-row: 2; }
+  :root[data-theme] #left, :root[data-theme] #right { grid-column: 2; grid-row: 2; }
+  #mnav { grid-column: 1 / -1; grid-row: 4; margin: 0 -8px; }
+  :root[data-theme] #foot { grid-column: 1 / -1; grid-row: 3; }
+  #mnav button { min-height: 40px; flex-direction: row; gap: 6px; justify-content: center; }
+  #mnav button svg { width: 18px; height: 18px; }
+}

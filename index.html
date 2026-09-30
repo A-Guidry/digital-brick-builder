@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Type anything or drop a picture and get a model built only from real brick and plate parts, in real colours, with simple step-by-step instructions, a virtual build with parts bags, and a wanted-list file for BrickLink. Free, runs in your browser.">
+<meta property="og:title" content="Digital Brick Builder">
+<meta property="og:description" content="Turn an idea or a picture into a buildable brick model with step-by-step instructions and a parts list.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#4f46e5">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebApplication","name":"Digital Brick Builder","applicationCategory":"DesignApplication","operatingSystem":"Any (web browser)","description":"Create buildable brick models from text or pictures, with step-by-step instructions and a parts list.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}</script>
+<title>Digital Brick Builder</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect x=%272%27 y=%278%27 width=%2712%27 height=%276%27 fill=%27%23111%27/%3E%3Crect x=%274%27 y=%274%27 width=%274%27 height=%274%27 fill=%27%23111%27/%3E%3Crect x=%279%27 y=%274%27 width=%274%27 height=%274%27 fill=%27%23111%27/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/src/style.css">
+<link rel="stylesheet" href="/src/themes.css">
+<link rel="stylesheet" href="/src/mobile.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <b class="logo">Digital Brick Builder</b>
+    <span class="sub" id="modelname">no model</span>
+    <span class="sp"></span>
+    <div class="seg" id="looks" role="group" aria-label="Lighting">
+      <button data-look="studio" class="on">Studio</button><button data-look="dramatic">Dramatic</button>
+    </div>
+    <button id="btn-profile" title="Your saved builds and progress">Guest</button>
+    <button id="btn-settings">AI settings</button>
+  </header>
+  <aside id="left">
+    <section>
+      <label class="h" for="prompt">Describe anything</label>
+      <textarea id="prompt" rows="3" placeholder="a red fire truck, a sitting cat, the Eiffel tower…"></textarea>
+      <div id="drop" tabindex="0"><span id="drop-text">…or drop / paste / click to add a picture</span><img id="drop-img" alt="" hidden><button id="drop-clear" hidden title="Remove picture">×</button></div>
+      <input type="file" id="file" accept="image/*" hidden>
+      <button id="go" class="primary">Generate</button>
+      <div id="ai-note" class="note"></div>
+    </section>
+    <section>
+      <div class="h">Progress</div>
+      <ol id="log" class="log"><li class="dim">Nothing yet.</li></ol>
+    </section>
+    <section>
+      <div class="h">Ready-made (no AI needed)</div>
+      <div id="presets" class="presets"></div>
+    </section>
+  </aside>
+  <main id="stage">
+    <div id="view"></div>
+    <div id="hud"></div>
+    <div id="banner" hidden></div>
+  </main>
+  <aside id="right">
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="steps" class="on">Steps</button>
+      <button role="tab" data-tab="build">Build</button>
+      <button role="tab" data-tab="saved">Saved</button>
+      <button role="tab" data-tab="parts">Parts</button>
+      <button role="tab" data-tab="checks">Checks</button>
+    </nav>
+    <div id="tab-steps" class="pane"></div>
+    <div id="tab-build" class="pane" hidden></div>
+    <div id="tab-saved" class="pane" hidden></div>
+    <div id="tab-parts" class="pane" hidden></div>
+    <div id="tab-checks" class="pane" hidden></div>
+  </aside>
+    <nav id="mnav" aria-label="Sections">
+    <button data-m="create"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Create</span></button>
+    <button data-m="steps"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>Steps</span></button>
+    <button data-m="build"><svg viewBox="0 0 24 24"><rect x="4" y="10" width="16" height="9" rx="1"/><path d="M8 10V7M12 10V7M16 10V7"/></svg><span>Build</span></button>
+    <button data-m="saved"><svg viewBox="0 0 24 24"><path d="M7 4h10v16l-5-4-5 4z"/></svg><span>Saved</span></button>
+    <button data-m="parts"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7"/><rect x="13" y="4" width="7" height="7"/><rect x="4" y="13" width="7" height="7"/><rect x="13" y="13" width="7" height="7"/></svg><span>Parts</span></button>
+    <button data-m="checks"><svg viewBox="0 0 24 24"><path d="M5 12l4 4 10-10"/></svg><span>Checks</span></button>
+  </nav>
+  <footer id="foot"><details><summary>Project disclaimer</summary><p>Digital Brick Builder is an independent fan project. It is not affiliated with, authorized by, or endorsed by the LEGO Group. LEGO® and BrickLink® are trademarks of their respective owners. Your saved builds and progress stay in your browser unless you save a profile file.</p></details></footer>
+</div>
+<dialog id="profile">
+  <h3>Your profile</h3>
+  <p class="note">No account needed. Your builds and progress are saved in this browser automatically. Save a profile file to back it up, move to another computer, or keep it safe.</p>
+  <label>Display name (optional)<input id="pf-name" maxlength="60" placeholder="Guest" autocomplete="off"></label>
+  <p class="note" id="pf-status"></p>
+  <div class="row"><button id="pf-save" class="primary">Save profile file</button><button id="pf-load">Load profile file…</button><input type="file" id="pf-file" accept=".json,application/json" hidden></div>
+  <label class="chk"><input type="checkbox" id="pf-inc-settings"> Include my AI settings (provider and model names)</label>
+  <label class="chk"><input type="checkbox" id="pf-inc-keys" disabled> Also include my API keys <span class="dim">(anyone with the file could use them — leave off unless the file stays private)</span></label>
+  <p class="note" id="pf-msg" role="status"></p>
+  <div class="row" id="pf-apply-row" hidden><button id="pf-apply">Apply the AI settings from this file</button></div>
+  <div class="row"><button id="pf-persist">Ask browser to keep my data</button><span class="sp"></span><button id="pf-erase">Erase profile here…</button></div>
+  <div class="row end"><button id="pf-close" class="primary">Done</button></div>
+</dialog>
+<dialog id="settings">
+  <form method="dialog">
+    <h3>AI settings</h3>
+    <p class="note">Keys stay in this browser (local storage) and are sent only to the provider you pick. Nothing else leaves your machine.</p>
+    <div class="seg wide" id="prov">
+      <button type="button" data-p="anthropic">Anthropic</button><button type="button" data-p="gemini">Gemini</button><button type="button" data-p="local">Local model</button>
+    </div>
+    <div data-for="anthropic">
+      <label>Anthropic API key<input id="anthropicKey" type="password" autocomplete="off" placeholder="sk-ant-…"></label>
+      <label>Model<input id="anthropicModel"></label>
+    </div>
+    <div data-for="gemini">
+      <label>Gemini API key<input id="geminiKey" type="password" autocomplete="off" placeholder="AIza…"></label>
+      <label>Model<input id="geminiModel"></label>
+    </div>
+    <div data-for="local">
+      <label>OpenAI-compatible base URL (Ollama, LM Studio…)<input id="localUrl"></label>
+      <label>Model name<input id="localModel"></label>
+      <p class="note">Pictures need a vision-capable local model. Ollama needs OLLAMA_ORIGINS="*" to accept browser requests.</p>
+    </div>
+    <div class="row"><button type="button" id="test">Test connection</button><span id="test-out" class="note"></span></div>
+    <div class="row end"><button type="button" id="clear-keys">Clear saved keys</button><button type="button" id="save-close" class="primary">Save &amp; close</button></div>
+  </form>
+</dialog>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>

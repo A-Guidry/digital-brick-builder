@@ -1,0 +1,14 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const p = await (await browser.newContext({ viewport: { width: 1440, height: 860 }, deviceScaleFactor: 1 })).newPage();
+await p.goto('http://127.0.0.1:5173/');
+await p.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model);
+await p.click('#presets button[data-id=penguin]'); await p.waitForFunction(() => !document.querySelector('#stage.busy'));
+await p.evaluate(() => { const r = document.querySelector('#s-range'); r.max; r.value = '14.5'; r.dispatchEvent(new Event('input', { bubbles: true })); });
+await p.waitForTimeout(1500); await p.screenshot({ path: 'shots/20-slider-scrub.png' });
+await p.click('.tabs button[data-tab=parts]'); await p.waitForTimeout(800); await p.screenshot({ path: 'shots/21-parts-bricklink.png' });
+await p.click('#btn-settings'); await p.waitForTimeout(500); await p.screenshot({ path: 'shots/22-settings.png' });
+await p.click('#save-close'); await p.waitForTimeout(500); await p.screenshot({ path: 'shots/23-settings-closed.png' });
+await browser.close();

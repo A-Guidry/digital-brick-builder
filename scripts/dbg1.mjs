@@ -1,0 +1,15 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const page = await browser.newPage({ viewport: { width: 1440, height: 860 } });
+page.on('console', m => console.log('console', m.type(), m.text()));
+page.on('pageerror', e => console.log('pageerror', e.message));
+await page.goto('http://127.0.0.1:5173/');
+await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model);
+await page.click('#btn-settings'); await page.fill('#anthropicKey', 'sk-ant-XYZ');
+console.log('open?', await page.evaluate(() => document.querySelector('#settings').open));
+await page.evaluate(() => { document.querySelector('#settings').addEventListener('close', () => console.log('CLOSE EVENT FIRED')); });
+await page.click('#settings button[value=close]'); await page.waitForTimeout(300);
+console.log('open after?', await page.evaluate(() => document.querySelector('#settings').open), await page.evaluate(() => localStorage.getItem('brickforge.settings.v1')));
+await browser.close();

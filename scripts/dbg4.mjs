@@ -1,0 +1,28 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const p = await (await browser.newContext({ viewport: { width: 1300, height: 640 }, deviceScaleFactor: 1 })).newPage();
+p.setDefaultTimeout(150000);
+p.on('pageerror', e => console.log('pageerror', e.message));
+await p.goto('http://127.0.0.1:5173/');
+await p.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model);
+await p.click('.tabs button[data-tab=build]');
+await p.click('.bag.can');
+await p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
+await p.waitForTimeout(3000);
+const g = () => p.evaluate(() => window.__bf.viewer.ghostRoot.children.length);
+
+const need = await p.evaluate(() => window.__bf.steps[0].parts.map(q => ({ part: q.part, color: q.color, id: q.id })));
+const snap = () => p.evaluate(() => window.__bf.viewer.pile.snapshot());
+const wrongB = (await snap()).find(q => q.part !== need[0].part || q.color !== need[0].color);
+const bp = await p.evaluate(u => { const q = window.__bf.viewer.pile.snapshot().find(x => x.uid === u); return window.__bf.toScreen(q.x, q.y, q.z); }, wrongB.uid);
+console.log('wrong brick', wrongB.part, wrongB.color, bp);
+await p.mouse.click(bp[0], bp[1]); await p.waitForTimeout(500);
+console.log('selected', await p.evaluate(() => window.__bf.viewer.pile.selected?.part), 'ghosts', await p.evaluate(() => window.__bf.viewer.ghostRoot.children.length));
+const gp = await p.evaluate(id => { const g = window.__bf.viewer.ghostRoot.children.find(c => c.userData.id === id); return window.__bf.toScreen(g.position.x, g.position.y, g.position.z); }, need[0].id);
+console.log('ghost pos', gp);
+await p.mouse.click(gp[0], gp[1]); await p.waitForTimeout(1000);
+console.log('msg', await p.locator('#b-msg').innerText(), 'ghosts', await p.evaluate(() => window.__bf.viewer.ghostRoot.children.length));
+await p.screenshot({ path: 'shots/dbg4.png' });
+await browser.close();

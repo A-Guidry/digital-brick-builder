@@ -1,0 +1,12 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const p = await (await browser.newContext({ viewport: { width: 1440, height: 860 } })).newPage();
+await p.goto('http://127.0.0.1:5173/');
+await p.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model);
+const st = async l => console.log(l, await p.evaluate(() => [document.querySelector('#s-range').value, document.querySelector('#tab-steps .big').innerText, document.activeElement.tagName + '#' + document.activeElement.id]));
+const still = () => p.waitForFunction(() => { const r = document.querySelector('#s-range'); if (!r) return false; const v = +r.value; const w = window.__still; window.__still = v; console.log('poll', v, w); return Math.abs(v - Math.round(v)) < 0.001 && w === v; }, null, { timeout: 30000, polling: 700 });
+p.on('console', m => { if (m.text().startsWith('poll')) console.log(m.text()); });
+await p.keyboard.press('ArrowRight'); await still(); await st('a1'); await p.keyboard.press('ArrowRight'); await still(); await st('a2');
+await browser.close();

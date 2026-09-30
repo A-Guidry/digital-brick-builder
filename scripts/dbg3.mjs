@@ -1,0 +1,12 @@
+import { chromium } from 'playwright-core';
+import fs from 'fs';
+const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
+const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const page = await (await browser.newContext({ viewport: { width: 1000, height: 600 }, deviceScaleFactor: 1 })).newPage();
+await page.goto('http://127.0.0.1:5173/');
+await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model, null, { timeout: 30000 });
+await page.click('.tabs button[data-tab=build]');
+await page.click('.bag.can');
+await page.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent||''), null, {timeout:120000});
+console.log(await page.evaluate(() => { const v = window.__bf.viewer; const g = v.ghostRoot.children; return { n: g.length, ids: g.map(c => c.userData.id), pos: g.map(c => c.position.toArray().map(x=>+x.toFixed(1))), hits: g.map(c => { const w = c.position.clone(); const s = window.__bf.toScreen(w.x,w.y,w.z); const r = v.renderer.domElement.getBoundingClientRect(); v.raycaster.setFromCamera({x:((s[0]-r.left)/r.width)*2-1,y:-((s[1]-r.top)/r.height)*2+1}, v.camera); const h = v.raycaster.intersectObjects(g,false)[0]; return h ? h.object.userData.id : null; }) }; }));
+await browser.close();
