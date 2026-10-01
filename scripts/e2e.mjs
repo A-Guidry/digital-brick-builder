@@ -281,7 +281,7 @@ async function mockProxy(page, replies, seen) {
   await p.context().close();
 }
 { // C7 gemini
-  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-2.5-flash' });
+  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-3.8-flash' });
   await p.route('https://generativelanguage.googleapis.com/**', async route => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });

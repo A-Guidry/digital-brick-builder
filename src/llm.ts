@@ -12,7 +12,7 @@ export interface Settings {
 export const DEFAULTS: Settings = {
   provider: SHARED_URL ? 'shared' : 'anthropic',
   anthropicKey: '', anthropicModel: 'claude-sonnet-4-5',
-  geminiKey: '', geminiModel: 'gemini-2.5-flash',
+  geminiKey: '', geminiModel: 'gemini-3.8-flash',
   localUrl: 'http://localhost:11434/v1', localModel: 'llama3.2-vision',
   sharedUrl: SHARED_URL, sharedPasscode: '',
 };
