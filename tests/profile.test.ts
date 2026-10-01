@@ -32,6 +32,17 @@ describe('profile file', () => {
     expect(noKeys).not.toContain('SECRET'); expect(noKeys).toContain('claude-sonnet');
     expect(exportProfile(sample(), { settings: s, includeKeys: true })).toContain('sk-ant-SECRET');
   });
+  it('the shared-server passcode is treated like an API key, and the server address is never exported or imported', () => {
+    const s = { ...DEFAULTS, sharedPasscode: 'PASSCODE-SECRET' };
+    const noKeys = exportProfile(sample(), { settings: s });
+    expect(noKeys).not.toContain('PASSCODE-SECRET'); expect(noKeys).not.toContain('sharedUrl');
+    const withKeys = exportProfile(sample(), { settings: s, includeKeys: true });
+    expect(withKeys).toContain('PASSCODE-SECRET'); expect(withKeys).not.toContain('sharedUrl');
+    const back = validateProfile(JSON.parse(withKeys));
+    expect(back.ok && back.profile.settings?.sharedPasscode).toBe('PASSCODE-SECRET');
+    const hostile = validateProfile({ ...JSON.parse(withKeys), settings: { provider: 'shared', sharedUrl: 'https://evil.example', sharedPasscode: 'x' } });
+    expect(hostile.ok && hostile.profile.settings).toEqual({ provider: 'shared', sharedPasscode: 'x' });
+  });
   it('rejects files that are not profiles, too new, or not JSON', () => {
     expect(validateProfile({ hello: 1 }).ok).toBe(false);
     expect(validateProfile({ app: 'digital-brick-builder', version: 99 }).ok).toBe(false);

@@ -1,7 +1,8 @@
 import { chromium } from 'playwright-core';
 import fs from 'fs';
-const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
-const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+// CHROME_PATH lets this run outside the original Linux sandbox (e.g. macOS: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome").
+const exePath = process.env.CHROME_PATH || (() => { const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0]; return `/opt/pw-browsers/${exe}/chrome-linux/chrome`; })();
+const browser = await chromium.launch({ executablePath: exePath, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
 const url = process.env.URL || 'http://127.0.0.1:5173/';
 const results = [];
 const check = (name, ok, extra = '') => { results.push({ name, ok }); console.log(ok ? 'PASS' : 'FAIL', name, extra); };
@@ -226,6 +227,59 @@ async function mockAnthropic(page, replies, seen) {
   await shot(p, '19-no-key');
   await p.context().close();
 }
+const PROXY = 'https://brickbuilder-api.arcwel.ai';
+async function mockProxy(page, replies, seen) {
+  await page.route(`${PROXY}/**`, async route => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (req.url().endsWith('/healthz')) return route.fulfill({ status: 200, headers: cors, contentType: 'text/plain', body: 'ok' });
+    seen.push({ headers: req.headers(), body: JSON.parse(req.postData()) });
+    const r = replies.length > 1 ? replies.shift() : replies[0];
+    if (r && r.status) return route.fulfill({ status: r.status, headers: { ...cors, ...(r.retry ? { 'retry-after': r.retry } : {}) }, contentType: 'application/json', body: JSON.stringify({ error: r.error }) });
+    route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ text: '```json\n' + JSON.stringify(r) + '\n```' }) });
+  });
+}
+{ // C6b shared server: first-time default, passcode flow, friendly limit message, no passcode in profile file
+  const seen = []; const p = await fresh(null);
+  check('shared: first-time visitors start on "Shared server"', await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{"provider":"shared"}').provider) === 'shared' && /passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
+  await mockProxy(p, [BOAT], seen);
+  await p.click('#btn-settings');
+  check('shared: only the passcode is shown (no key/model fields)', await p.locator('#sharedPasscode').isVisible() && !(await p.locator('#anthropicKey').isVisible()) && !(await p.locator('#geminiKey').isVisible()));
+  await p.fill('#sharedPasscode', 'CODE-E2E-123');
+  await p.click('#test'); await p.waitForFunction(() => /Connected|Could not|passcode|limit/.test(document.querySelector('#test-out').textContent));
+  check('shared: test connection reaches the proxy', /Connected/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
+  await shot(p, '19b-shared-settings');
+  seen.length = 0; await p.click('#save-close');
+  await p.fill('#prompt', 'a small red house'); await p.click('#go'); await idle(p);
+  check('shared: request goes to /v1/ai with the passcode header, system prompt and user text, and no model or key',
+    seen.length === 1 && seen[0].headers['x-dbb-passcode'] === 'CODE-E2E-123' && /never place bricks/.test(seen[0].body.system) && /red house/.test(JSON.stringify(seen[0].body.messages)) && !('model' in seen[0].body) && !('x-api-key' in seen[0].headers));
+  check('shared: model appears', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
+  // profile file must not carry the passcode unless keys are included
+  await p.click('#btn-profile'); await p.check('#pf-inc-settings');
+  const dl1 = p.waitForEvent('download'); await p.click('#pf-save'); const f1 = await (await dl1).createReadStream(); let t1 = ''; for await (const c of f1) t1 += c;
+  check('shared: profile file does not contain the passcode by default', !t1.includes('CODE-E2E-123') && !t1.includes('brickbuilder-api'), t1.slice(0, 80));
+  await p.check('#pf-inc-keys');
+  const dl2 = p.waitForEvent('download'); await p.click('#pf-save'); const f2 = await (await dl2).createReadStream(); let t2 = ''; for await (const c of f2) t2 += c;
+  check('shared: passcode only appears when "include keys" is ticked', t2.includes('CODE-E2E-123'));
+  check('shared: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await p.context().close();
+}
+{ // C6c shared server: limit message is shown as written; wrong passcode too
+  for (const [reply, rx] of [[{ status: 429, retry: '7200', error: 'You have used your shared AI allowance for today. Please try again in about 2 hours.' }, /about 2 hours/], [{ status: 401, error: 'That passcode is not right. Check it and try again.' }, /passcode is not right/]]) {
+    const seen = []; const p = await fresh({ provider: 'shared', sharedUrl: PROXY, sharedPasscode: 'x' }); await mockProxy(p, [reply], seen);
+    await p.fill('#prompt', 'thing'); await p.click('#go'); await idle(p);
+    check(`shared: ${reply.status} message is shown to the user as written`, rx.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
+    await p.context().close();
+  }
+}
+{ // C6d shared server + picture
+  const seen = []; const p = await fresh({ provider: 'shared', sharedUrl: PROXY, sharedPasscode: 'x' }); await mockProxy(p, [BOAT], seen);
+  await p.setInputFiles('#file', '/tmp/test-house.png'); await p.waitForFunction(() => !document.querySelector('#drop-img').hidden);
+  await p.click('#go'); await idle(p);
+  const m0 = seen[0]?.body.messages[0];
+  check('shared: picture is sent as {mime, base64} on the message', m0?.image?.mime === 'image/jpeg' && m0.image.base64.length > 500);
+  await p.context().close();
+}
 { // C7 gemini
   const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-2.5-flash' });
   await p.route('https://generativelanguage.googleapis.com/**', async route => {
@@ -379,7 +433,7 @@ async function mockAnthropic(page, replies, seen) {
 }
 { // D. settings persist + clear keys
   const p = await fresh(null);
-  await p.click('#btn-settings'); await p.fill('#anthropicKey', 'sk-ant-XYZ'); await p.click('#save-close'); await p.waitForTimeout(300);
+  await p.click('#btn-settings'); await p.click('#prov button[data-p=anthropic]'); await p.fill('#anthropicKey', 'sk-ant-XYZ'); await p.click('#save-close'); await p.waitForTimeout(300);
   check('settings: Save & close actually closes the dialog', await p.locator('#settings[open]').count() === 0);
   const saved = await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1')).anthropicKey);
   await p.click('#btn-settings'); await p.click('#clear-keys');

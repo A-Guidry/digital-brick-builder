@@ -1,26 +1,30 @@
 import { Msg } from './prompt';
+import { SHARED_URL } from './config';
 
-export type ProviderId = 'anthropic' | 'gemini' | 'local';
+export type ProviderId = 'shared' | 'anthropic' | 'gemini' | 'local';
 export interface Settings {
   provider: ProviderId;
   anthropicKey: string; anthropicModel: string;
   geminiKey: string; geminiModel: string;
   localUrl: string; localModel: string;
+  sharedUrl: string; sharedPasscode: string;
 }
 export const DEFAULTS: Settings = {
-  provider: 'anthropic',
+  provider: SHARED_URL ? 'shared' : 'anthropic',
   anthropicKey: '', anthropicModel: 'claude-sonnet-4-5',
   geminiKey: '', geminiModel: 'gemini-2.5-flash',
   localUrl: 'http://localhost:11434/v1', localModel: 'llama3.2-vision',
+  sharedUrl: SHARED_URL, sharedPasscode: '',
 };
 const KEY = 'brickforge.settings.v1';
 export function loadSettings(): Settings {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch { return { ...DEFAULTS }; }
 }
 export function saveSettings(s: Settings) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* storage unavailable */ } }
-export function clearKeys() { const s = loadSettings(); s.anthropicKey = ''; s.geminiKey = ''; saveSettings(s); }
+export function clearKeys() { const s = loadSettings(); s.anthropicKey = ''; s.geminiKey = ''; s.sharedPasscode = ''; saveSettings(s); }
 
 export function isConfigured(s: Settings): boolean {
+  if (s.provider === 'shared') return !!s.sharedUrl.trim() && !!s.sharedPasscode.trim();
   return s.provider === 'anthropic' ? !!s.anthropicKey.trim() : s.provider === 'gemini' ? !!s.geminiKey.trim() : !!s.localUrl.trim() && !!s.localModel.trim();
 }
 
@@ -34,7 +38,26 @@ async function readError(r: Response): Promise<string> {
 const netHint = (e: unknown, what: string) => new Error(`Could not reach ${what}: ${(e as Error).message}. ` +
   (what.includes('local') ? 'Is the server running, and does it allow browser requests (CORS)? For Ollama set OLLAMA_ORIGINS="*".' : 'Check your network connection.'));
 
+/** Shared server: the proxy holds the AI credentials; we send only the passcode. Its error text is already plain language. */
+async function completeShared(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
+  let r: Response;
+  try {
+    r = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/v1/ai`, {
+      method: 'POST', signal,
+      headers: { 'content-type': 'application/json', 'x-dbb-passcode': s.sharedPasscode.trim() },
+      body: JSON.stringify({ system, messages: msgs.map(m => ({ role: m.role, text: m.text, ...(m.image ? { image: { mime: m.image.mime, base64: m.image.base64 } } : {}) })) }),
+    });
+  } catch (e) { throw netHint(e, 'the shared server'); }
+  if (!r.ok) {
+    let msg = ''; try { msg = String((await r.json()).error ?? ''); } catch { /* not JSON */ }
+    throw new Error(msg || `The shared server had a problem (${r.status}). Try again in a moment.`);
+  }
+  const j = await r.json();
+  return typeof j.text === 'string' ? j.text : '';
+}
+
 export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
+  if (s.provider === 'shared') return completeShared(s, system, msgs, signal);
   if (s.provider === 'anthropic') {
     let r: Response;
     try {
@@ -91,6 +114,10 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
 }
 
 export async function testConnection(s: Settings): Promise<string> {
+  if (s.provider === 'shared') {
+    try { const h = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/healthz`); if (!h.ok) throw new Error(`status ${h.status}`); }
+    catch (e) { throw netHint(e, 'the shared server'); }
+  }
   const out = await complete(s, 'Reply with the single word OK.', [{ role: 'user', text: 'ping' }]);
   return out.trim().slice(0, 40) || '(empty reply)';
 }

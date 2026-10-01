@@ -1,0 +1,39 @@
+[Unit]
+Description=Digital Brick Builder shared AI proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=dbb
+Group=dbb
+WorkingDirectory=/opt/dbb-proxy
+EnvironmentFile=/etc/dbb-proxy/env
+ExecStart=/usr/bin/node --max-old-space-size=192 /opt/dbb-proxy/proxy.mjs
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+UMask=0077
+TasksMax=64
+RestrictAddressFamilies=AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

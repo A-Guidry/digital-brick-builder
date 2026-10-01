@@ -90,9 +90,14 @@
 <dialog id="settings">
   <form method="dialog">
     <h3>AI settings</h3>
-    <p class="note">Keys stay in this browser (local storage) and are sent only to the provider you pick. Nothing else leaves your machine.</p>
+    <p class="note">Keys and passcodes stay in this browser (local storage) and are sent only to the provider or server you pick. Nothing else leaves your machine.</p>
     <div class="seg wide" id="prov">
-      <button type="button" data-p="anthropic">Anthropic</button><button type="button" data-p="gemini">Gemini</button><button type="button" data-p="local">Local model</button>
+      <button type="button" data-p="shared">Shared server</button><button type="button" data-p="anthropic">Anthropic</button><button type="button" data-p="gemini">Gemini</button><button type="button" data-p="local">Local model</button>
+    </div>
+    <div data-for="shared">
+      <label>Passcode<input id="sharedPasscode" type="password" autocomplete="off" placeholder="The passcode you were given"></label>
+      <p class="note">Uses the site owner's AI, so you do not need your own key. There is a daily limit per person. The passcode stays in this browser and is never put in profile files or share links.</p>
+      <details><summary class="note">Advanced</summary><label>Server address<input id="sharedUrl"></label></details>
     </div>
     <div data-for="anthropic">
       <label>Anthropic API key<input id="anthropicKey" type="password" autocomplete="off" placeholder="sk-ant-…"></label>

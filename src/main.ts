@@ -402,7 +402,8 @@ function setImage(i: typeof image) {
 }
 function setNote(t: string, err = false) { const n = $('#ai-note'); n.textContent = t; n.className = 'note' + (err ? ' err' : ''); }
 function refreshNote() {
-  setNote(isConfigured(settings) ? `AI: ${settings.provider === 'anthropic' ? 'Anthropic' : settings.provider === 'gemini' ? 'Gemini' : 'local model'} · ${settings.provider === 'anthropic' ? settings.anthropicModel : settings.provider === 'gemini' ? settings.geminiModel : settings.localModel}` : 'No AI set up. Use AI settings to paste a key or point at a local model — or open a ready-made build below.');
+  if (settings.provider === 'shared' && !isConfigured(settings)) { setNote('Shared AI needs the passcode you were given. Open AI settings and enter it, or try a ready-made build below.'); return; }
+  setNote(isConfigured(settings) ? (settings.provider === 'shared' ? 'AI: shared server' : `AI: ${settings.provider === 'anthropic' ? 'Anthropic' : settings.provider === 'gemini' ? 'Gemini' : 'local model'} · ${settings.provider === 'anthropic' ? settings.anthropicModel : settings.provider === 'gemini' ? settings.geminiModel : settings.localModel}`) : 'No AI set up. Use AI settings to paste a key or point at a local model — or open a ready-made build below.');
 }
 
 // ---------- generate ----------
@@ -435,13 +436,13 @@ async function generate() {
 // ---------- settings dialog ----------
 const dlg = $('#settings') as HTMLDialogElement;
 function syncSettingsUi() {
-  for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel'] as const) ($(`#${k}`) as HTMLInputElement).value = settings[k];
+  for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) ($(`#${k}`) as HTMLInputElement).value = settings[k];
   document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.classList.toggle('on', b.dataset.p === settings.provider));
   document.querySelectorAll<HTMLElement>('[data-for]').forEach(d => d.hidden = d.dataset.for !== settings.provider);
   $('#test-out').textContent = '';
 }
 function readSettingsUi() {
-  for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel'] as const) settings[k] = ($(`#${k}`) as HTMLInputElement).value.trim();
+  for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) settings[k] = ($(`#${k}`) as HTMLInputElement).value.trim();
 }
 $('#btn-settings').onclick = () => { syncSettingsUi(); dlg.showModal(); };
 document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.onclick = () => { readSettingsUi(); settings.provider = b.dataset.p as ProviderId; saveSettings(settings); syncSettingsUi(); refreshNote(); });

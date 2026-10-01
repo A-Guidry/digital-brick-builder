@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --port 4173",
-    "test": "vitest run"
+    "test": "vitest run && node --test server/proxy.test.mjs"
   },
   "devDependencies": {
     "@types/three": "^0.170.0",

@@ -87,7 +87,8 @@ export function validateProfile(raw: unknown): Validated {
   if (r.settings && typeof r.settings === 'object') {
     const s: Partial<Settings> = {}, rs = r.settings as Record<string, unknown>;
     for (const k of Object.keys(DEFAULTS) as (keyof Settings)[]) if (typeof rs[k] === 'string') (s as any)[k] = str(rs[k], 400);
-    if (s.provider && !['anthropic', 'gemini', 'local'].includes(s.provider)) delete s.provider;
+    if (s.provider && !['shared', 'anthropic', 'gemini', 'local'].includes(s.provider)) delete s.provider;
+    delete s.sharedUrl; // never importable: a hostile file could point the passcode at someone else's server
     if (s.localUrl && !/^https?:\/\//i.test(s.localUrl)) delete s.localUrl;
     if (Object.keys(s).length) p.settings = s;
   }
@@ -99,7 +100,8 @@ export function exportProfile(p: Profile, opts: { settings?: Settings; includeKe
   const out: Profile = { ...p, savedAt: Date.now() };
   if (opts.settings) {
     const s: Partial<Settings> = { ...opts.settings };
-    if (!opts.includeKeys) { delete s.anthropicKey; delete s.geminiKey; }
+    delete s.sharedUrl;
+    if (!opts.includeKeys) { delete s.anthropicKey; delete s.geminiKey; delete s.sharedPasscode; }
     out.settings = s;
   } else delete out.settings;
   return JSON.stringify(out, null, 1);

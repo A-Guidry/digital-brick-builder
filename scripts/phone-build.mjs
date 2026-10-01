@@ -1,7 +1,7 @@
 import { chromium } from 'playwright-core';
 import fs from 'fs';
-const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0];
-const browser = await chromium.launch({ executablePath: `/opt/pw-browsers/${exe}/chrome-linux/chrome`, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
+const exePath = process.env.CHROME_PATH || (() => { const exe = fs.readdirSync('/opt/pw-browsers').filter(d => d.startsWith('chromium-'))[0]; return `/opt/pw-browsers/${exe}/chrome-linux/chrome`; })();
+const browser = await chromium.launch({ executablePath: exePath, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--use-gl=angle'] });
 const SZ = { phone: { width: 390, height: 844 }, small: { width: 360, height: 640 }, land: { width: 844, height: 390 } };
 const which = process.argv[2] || 'phone';
 const ctx = await browser.newContext({ viewport: SZ[which], isMobile: true, hasTouch: true, deviceScaleFactor: 1 });
