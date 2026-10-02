@@ -1,0 +1,64 @@
+/* Touch: no zoom on double-tap (pinch and scroll still work; the 3D view handles its own gestures). */
+html, body { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button, summary, .bag, .piece { -webkit-user-select: none; user-select: none; }
+
+/* Build mode: the side panels get out of the way. The stage fills the window; the sections become a vertical icon rail,
+   the build actions a second rail, what-to-find a slim strip, and the full panel opens on demand as a drawer over the stage. */
+#rail, #rail-act, #need, #toast, #drawer-close { display: none; }
+:root[data-theme] #app[data-tab=build] #hud { display: none; }   /* model stats are not needed while building */
+#need[hidden], #toast[hidden] { display: none !important; }
+
+:root[data-theme] #app[data-tab=build] { grid-template-columns: minmax(0, 1fr); }
+:root[data-theme] #app[data-tab=build] #left { display: none; }
+:root[data-theme] #app[data-tab=build] #stage { grid-column: 1; grid-row: 2; }
+:root[data-theme] #app[data-tab=build] #right {
+  grid-column: 1; grid-row: 2; justify-self: end; align-self: stretch; min-height: 0; z-index: 30; position: relative;
+  width: min(360px, calc(100% - 72px)); margin-right: 60px; display: none; overflow-y: auto;
+}
+:root[data-theme] #app[data-tab=build][data-drawer=open] #right { display: flex; }
+:root[data-theme] #app[data-tab=build] #right .tabs { display: none; }
+:root[data-theme] #app[data-tab=build] #right .pane { padding-top: 52px; }   /* room for the close button */
+:root[data-theme] #app[data-tab=build][data-drawer=open] #drawer-close { display: grid; position: absolute; right: 8px; top: 8px; z-index: 2; width: 36px; height: 36px; min-height: 36px; padding: 0; place-items: center; font-size: 20px; line-height: 1; }
+
+:root[data-theme] #app[data-tab=build] #rail { display: flex; flex-direction: column; gap: 6px; position: absolute; right: 8px; top: 8px; z-index: 40; }
+:root[data-theme] #app[data-tab=build][data-bag=on] #rail-act { display: flex; flex-direction: column; gap: 6px; position: absolute; left: 8px; top: 8px; z-index: 40; }
+#rail button, #rail-act button {
+  width: 44px; height: 44px; min-height: 44px; padding: 0; display: grid; place-items: center;
+  border-radius: 12px; background: var(--panel); color: var(--ink); box-shadow: var(--shadow);
+}
+#rail button svg, #rail-act button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#rail button.on { background: var(--accent-soft); color: var(--accent-strong); border-color: var(--accent); }
+#rail-act button:disabled { opacity: .4; }
+
+:root[data-theme] #app[data-tab=build] #need {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; position: absolute; top: 8px; left: 64px; right: 64px; z-index: 35; pointer-events: none;
+}
+#need .ns, #need .nc { background: var(--panel); box-shadow: var(--shadow); border-radius: 999px; padding: 3px 10px; font-weight: 700; }
+#need .nc { display: inline-flex; align-items: center; gap: 6px; }
+#need .nc .mini { border-radius: 2px; }
+:root[data-theme] #app[data-tab=build] #toast {
+  display: block; position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 35; pointer-events: none;
+  max-width: min(560px, calc(100% - 150px)); padding: 8px 14px; border-radius: 12px; text-align: center;
+  background: var(--panel); color: var(--ink); box-shadow: var(--shadow); font-weight: 600;
+}
+#toast.err { border-left: 4px solid var(--danger, #c0392b); }
+
+@media (max-width: 900px) {
+  :root[data-theme] #app[data-tab=build] { grid-template-rows: auto minmax(0, 1fr) auto; }
+  :root[data-theme] #app[data-tab=build] #mnav { display: none; }
+  :root[data-theme] #app[data-tab=build] header { display: none; }   /* more room for the build; settings are one tap away via the Create icon */
+  :root[data-theme] #app[data-tab=build] { grid-template-rows: minmax(0, 1fr) auto; }
+  :root[data-theme] #app[data-tab=build] #stage, :root[data-theme] #app[data-tab=build] #right { grid-row: 1; }
+  :root[data-theme] #app[data-tab=build] #foot { grid-row: 2; }
+  :root[data-theme] #app[data-tab=build] #foot { grid-column: 1; grid-row: 3; }
+  :root[data-theme] #app[data-tab=build] #right { justify-self: stretch; width: auto; margin-right: 60px; }
+  :root[data-theme] #app[data-tab=build][data-drawer=open] #right { display: block; }
+  :root[data-theme] #app[data-tab=build] #toast { bottom: 52px; max-width: calc(100% - 140px); }
+}
+@media (max-width: 900px) and (max-height: 520px) and (orientation: landscape) {
+  :root[data-theme] #app[data-tab=build], :root[data-theme] #app[data-tab=build][data-panel] { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+  :root[data-theme] #app[data-tab=build] #stage { grid-column: 1; grid-row: 1; }
+  :root[data-theme] #app[data-tab=build] #right { grid-column: 1; grid-row: 1; }
+  :root[data-theme] #app[data-tab=build] #foot { grid-column: 1; grid-row: 2; }
+  :root[data-theme] #app[data-tab=build] #toast { bottom: 12px; }
+}

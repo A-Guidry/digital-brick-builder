@@ -18,6 +18,9 @@ async function fresh(settings, viewport = { width: 1440, height: 860 }) {
   await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model, null, { timeout: 40000 });
   return page;
 }
+// The build panel is a drawer that tucks away once a bag is open. Use it the way a person would: open it, press, let it close.
+const pane = async (p, sel) => { await p.evaluate(() => { document.getElementById('app').dataset.drawer = 'open'; }); await p.click(sel); await p.evaluate(() => { document.getElementById('app').dataset.drawer = 'closed'; }); };
+const act = (p, name) => p.click(`#rail-act button[data-act=${name}]`);
 const idle = p => p.waitForFunction(() => !document.querySelector('#stage.busy') && !document.querySelector('#go').disabled, null, { timeout: 60000 });
 const shot = async (p, n) => { await p.waitForTimeout(600); await p.screenshot({ path: `shots/${n}.png` }); };
 
@@ -57,7 +60,7 @@ async function mockAnthropic(page, replies, seen) {
   const scr = (x, y, z) => p.evaluate(a => window.__bf.toScreen(...a), [x, y, z]);
   const msg = () => p.locator('#b-msg').innerText();
   const emptied = () => p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
-  await p.click('.bag.can');
+  await pane(p, '.bag.can');
   await p.waitForFunction(() => window.__bf.viewer.pile.count() > 3);
   await shot(p, '12-bag-ripping');
   await p.waitForFunction(() => /Rii+p|is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
@@ -89,7 +92,7 @@ async function mockAnthropic(page, replies, seen) {
   check('pile: a finger swipe over bricks pushes them around', swiped >= 1, `${swiped} bricks moved`);
   check('pile: camera did not orbit during the swipe (controls re-enabled after)', await p.evaluate(() => window.__bf.viewer.controls.enabled));
   // hint
-  await p.click('#b-hint'); await p.waitForTimeout(300);
+  await act(p, 'hint'); await p.waitForTimeout(300);
   check('hint: names the piece and pulses matches in the tray', /Hint: look for/.test(await msg()), await msg());
   // pieces
   const need = await p.evaluate(() => window.__bf.steps[0].parts.map(q => ({ part: q.part, color: q.color, id: q.id })));
@@ -123,22 +126,22 @@ async function mockAnthropic(page, replies, seen) {
   await p.waitForFunction(() => /Snapped on/.test(document.querySelector('#b-msg')?.textContent || ''));
   check('dragging the right brick onto its ghost snaps it on', (await poolCount()) === counts[0] - 1, `pile ${await poolCount()}`);
   await shot(p, '15-brick-placed');
-  await p.click('#b-undo'); await p.waitForTimeout(400);
+  await act(p, 'undo'); await p.waitForTimeout(400);
   check('undo drops it back into the tray', (await poolCount()) === counts[0]);
-  await p.click('#b-shake'); await p.waitForTimeout(600);
+  await act(p, 'shake'); await p.waitForTimeout(600);
   // finish all four bags
   for (let i = 0; i < 4; i++) {
     if (i > 0) {
-      await p.waitForSelector('.bag.can');
+      await p.waitForSelector('.bag.can', { state: 'attached' });
       check(`bags: bag ${i + 1} unlocks once bag ${i} is built`, (await p.$$eval('.bag', els => els.map(e => !e.disabled)))[i] === true);
-      await p.click('.bag.can'); await emptied(); await p.waitForTimeout(1500);
+      await pane(p, '.bag.can'); await emptied(); await p.waitForTimeout(1500);
       check(`bags: bag ${i + 1} dumps exactly its ${counts[i]} bricks`, (await poolCount()) === counts[i], `${await poolCount()}`);
     }
-    await p.click('#b-finish');
+    await pane(p, '#b-finish');
     await p.waitForFunction(() => document.querySelector('.bag.done, #b-restart'), null, { timeout: 60000 });
     await p.waitForFunction(i => document.querySelectorAll('.bag.done').length >= i + 1, i, { timeout: 60000 });
   }
-  await p.waitForSelector('#b-restart');
+  await p.waitForSelector('#b-restart', { state: 'attached' });
   check('finished screen after bag 4', (await p.locator('#tab-build').innerText()).includes('Finished'));
   check('every part of the model ends up built', await p.evaluate(() => [...window.__bf.viewer.meshes.values()].every(m => m.visible)));
   await shot(p, '16-build-finished');
@@ -281,7 +284,7 @@ async function mockProxy(page, replies, seen) {
   await p.context().close();
 }
 { // C7 gemini
-  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-3.8-flash' });
+  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-3.5-flash-lite' });
   await p.route('https://generativelanguage.googleapis.com/**', async route => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
@@ -289,7 +292,7 @@ async function mockProxy(page, replies, seen) {
     route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(BOAT) }] } }] }) });
   });
   await p.setInputFiles('#file', '/tmp/test-house.png'); await p.fill('#prompt', 'boat'); await p.click('#go'); await idle(p);
-  check('ai/gemini: correct endpoint, key header, system instruction and inlineData image', seen.length === 1 && /gemini-2\.5-flash:generateContent/.test(seen[0].url) && seen[0].headers['x-goog-api-key'] === 'AIza-TEST' && !!seen[0].body.systemInstruction && !!seen[0].body.contents[0].parts[0].inlineData);
+  check('ai/gemini: correct endpoint, key header, system instruction and inlineData image', seen.length === 1 && /gemini-3\.5-flash-lite:generateContent/.test(seen[0].url) && seen[0].headers['x-goog-api-key'] === 'AIza-TEST' && !!seen[0].body.systemInstruction && !!seen[0].body.contents[0].parts[0].inlineData);
   check('ai/gemini: model shows', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
   await p.context().close();
 }
@@ -324,13 +327,13 @@ async function mockProxy(page, replies, seen) {
   check('profile: display name shows in the header button', (await p.locator('#btn-profile').innerText()) === 'Ada');
   await p.click('#pf-close');
   // build progress: bag 1 done, bag 2 open with one brick placed
-  await p.click('.tabs button[data-tab=build]'); await p.click('.bag.can');
+  await p.click('.tabs button[data-tab=build]'); await pane(p, '.bag.can');
   await p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
-  await p.click('#b-finish'); await p.waitForFunction(() => document.querySelectorAll('.bag.done').length >= 1);
-  await p.click('.bag.can'); await p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
+  await pane(p, '#b-finish'); await p.waitForFunction(() => document.querySelectorAll('.bag.done').length >= 1);
+  await pane(p, '.bag.can'); await p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
   const bag2 = await p.evaluate(() => window.__bf.viewer.pile.count());
   await p.waitForFunction(() => { const a = window.__bf.viewer.pile.snapshot(); return a.filter(q => q.asleep).length >= a.length * 0.6; }, null, { timeout: 40000 }).catch(() => {});
-  await p.click('#b-auto'); await p.waitForFunction(() => /Snapped on/.test(document.querySelector('#b-msg')?.textContent || ''));
+  await act(p, 'auto'); await p.waitForFunction(() => /Snapped on/.test(document.querySelector('#b-msg')?.textContent || ''));
   const remaining = bag2 - 1;
   await p.waitForTimeout(600);
   const stored = await p.evaluate(() => JSON.parse(localStorage.getItem('dbb.profile.v1')));
@@ -429,6 +432,32 @@ async function mockProxy(page, replies, seen) {
   check('ready-made: pictures load', loaded);
   await p.click('.tabs button[data-tab=parts]');
   check('bricklink: upload panel with copy-and-open button', await p.locator('#p-bl').count() === 1 && /Wanted List/.test(await p.locator('.bl-card').innerText()));
+  await p.context().close();
+}
+{ // B2. build mode: panels step aside, icon rails, touch rules, drawer
+  const p = await fresh(null, { width: 1440, height: 860 });
+  check('touch: double-tap zoom is off (touch-action: manipulation on the page)', await p.evaluate(() => getComputedStyle(document.documentElement).touchAction === 'manipulation' && getComputedStyle(document.body).touchAction === 'manipulation'));
+  const full = await p.evaluate(() => document.getElementById('stage').getBoundingClientRect().width);
+  await p.click('.tabs button[data-tab=build]'); await p.waitForTimeout(500);
+  const st = await p.evaluate(() => ({ left: getComputedStyle(document.getElementById('left')).display, stage: document.getElementById('stage').getBoundingClientRect().width, rail: [...document.querySelectorAll('#rail button')].map(b => b.getBoundingClientRect().width), drawer: document.getElementById('app').dataset.drawer, right: getComputedStyle(document.getElementById('right')).display }));
+  check('build: left panel is gone and the 3D view is much wider', st.left === 'none' && st.stage > full * 1.4, `${full} -> ${st.stage}`);
+  check('build: sections are a vertical icon rail (6 icons, finger-sized)', st.rail.length === 6 && st.rail.every(w => w >= 40), st.rail.join());
+  check('build: the panel is a drawer, open at first so a bag can be chosen', st.drawer === 'open' && st.right !== 'none');
+  await p.click('.bag.can'); await p.waitForFunction(() => /Rii+p|is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
+  await p.waitForFunction(() => document.querySelectorAll('.bag.open').length === 1 && !document.querySelector('.bag .bs')?.textContent.includes('Opening'));
+  await p.waitForTimeout(500);
+  check('build: opening a bag tucks the drawer away', await p.evaluate(() => getComputedStyle(document.getElementById('right')).display === 'none'));
+  await p.waitForFunction(() => /is empty/.test(document.querySelector('#b-msg')?.textContent || ''));
+  check('build: the pieces to find stay on screen as a slim strip', await p.locator('#need .nc').count() > 0 && await p.locator('#need').isVisible());
+  check('build: Hint / Shake / Undo / Place are icon buttons on the stage', await p.locator('#rail-act button').count() === 4 && await p.locator('#rail-act').isVisible());
+  check('build: the guidance message shows as a toast', /is empty/.test(await p.locator('#toast').innerText()));
+  await p.click('#rail button[data-m=build]'); await p.waitForTimeout(200);
+  check('build: the Build icon brings the drawer back', await p.evaluate(() => getComputedStyle(document.getElementById('right')).display !== 'none'));
+  await p.keyboard.press('Escape'); await p.waitForTimeout(200);
+  check('build: Escape closes the drawer', await p.evaluate(() => getComputedStyle(document.getElementById('right')).display === 'none'));
+  await p.click('#rail button[data-m=steps]'); await p.waitForTimeout(500);
+  check('build: leaving build mode brings the normal panels back', await p.evaluate(() => getComputedStyle(document.getElementById('left')).display !== 'none' && getComputedStyle(document.getElementById('right')).display !== 'none'));
+  check('build: no page errors', p.errors.length === 0, p.errors.join('|'));
   await p.context().close();
 }
 { // D. settings persist + clear keys

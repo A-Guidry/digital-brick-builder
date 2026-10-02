@@ -44,7 +44,7 @@ function log(text: string, tag = '', bad = false) {
 const appEl = document.getElementById('app')!;
 const phone = window.matchMedia('(max-width: 900px)');
 /** Phone layout: one bottom bar drives both the "Create" panel (left) and the tab panes (right). */
-function setPanel(name: string) { const was = appEl.dataset.tab; appEl.dataset.panel = name === 'create' ? 'create' : 'tab'; appEl.dataset.tab = name; document.querySelectorAll<HTMLElement>('#mnav button').forEach(b => b.classList.toggle('on', b.dataset.m === name)); if (was !== name) { document.getElementById('left')!.scrollTop = 0; document.getElementById('right')!.scrollTop = 0; } }
+function setPanel(name: string) { const was = appEl.dataset.tab; appEl.dataset.panel = name === 'create' ? 'create' : 'tab'; appEl.dataset.tab = name; document.querySelectorAll<HTMLElement>('#mnav button, #rail button').forEach(b => b.classList.toggle('on', b.dataset.m === name)); if (was !== name) { document.getElementById('left')!.scrollTop = 0; document.getElementById('right')!.scrollTop = 0; } }
 function showCreate() { if (mode === 'build') leaveBuild(); setPanel('create'); }
 document.querySelectorAll<HTMLElement>('#mnav button').forEach(b => b.onclick = () => b.dataset.m === 'create' ? showCreate() : tab(b.dataset.m!));
 /** The disclaimer line sits under the panel (above the bottom bar on phones). */
@@ -52,6 +52,7 @@ function placeFoot() { const f = document.getElementById('foot')!; appEl.appendC
 phone.addEventListener?.('change', () => { placeFoot(); setPanel(phone.matches ? (appEl.dataset.tab || 'create') : 'steps'); });
 function tab(name: string) {
   setPanel(name);
+  if (name === 'build') appEl.dataset.drawer = 'open'; else delete appEl.dataset.drawer;
   document.querySelectorAll<HTMLElement>('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
   document.querySelectorAll<HTMLElement>('.pane').forEach(p => p.hidden = p.id !== `tab-${name}`);
   if (name === 'build') enterBuild(); else if (mode === 'build') leaveBuild();
@@ -59,6 +60,41 @@ function tab(name: string) {
   if (name === 'saved') renderSaved();
 }
 document.querySelectorAll<HTMLElement>('.tabs button').forEach(b => b.onclick = () => tab(b.dataset.tab!));
+
+// ---------- build mode chrome: the panels step aside, sections become an icon rail, the panel opens as a drawer ----------
+const setDrawer = (open: boolean) => { appEl.dataset.drawer = open ? 'open' : 'closed'; };
+document.querySelectorAll<HTMLElement>('#mnav button').forEach(src => {
+  const m = src.dataset.m!, label = src.querySelector('span')!.textContent!;
+  const b = document.createElement('button'); b.dataset.m = m; b.title = label; b.setAttribute('aria-label', label);
+  b.appendChild(src.querySelector('svg')!.cloneNode(true));
+  b.onclick = () => m === 'create' ? showCreate() : m === 'build' && mode === 'build' ? setDrawer(appEl.dataset.drawer !== 'open') : tab(m);
+  $('#rail').appendChild(b);
+});
+$('#drawer-close').onclick = () => setDrawer(false);
+document.querySelectorAll<HTMLElement>('#rail-act button').forEach(b => b.onclick = () => document.getElementById('b-' + b.dataset.act!)?.click());
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && mode === 'build' && appEl.dataset.drawer === 'open' && curBag >= 0) setDrawer(false); });
+// touching the 3D view while building tucks the drawer away (once a bag is open)
+$('#view').addEventListener('pointerdown', () => { if (mode === 'build' && appEl.dataset.drawer === 'open' && curBag >= 0) setDrawer(false); }, true);
+/** What to find, the action buttons' enabled state, and the rail visibility, mirrored from the build pane. */
+function syncBuildChrome() {
+  const on = curBag >= 0 && !allDone() && !!curStep();
+  appEl.dataset.bag = on ? 'on' : 'off';
+  const need = $('#need');
+  if (on) {
+    const bag = bags[curBag], st = curStep()!;
+    const groups = groupParts(st.parts.filter(p => !bPlaced.has(p.id)));
+    need.innerHTML = `<span class="ns">Bag ${bag.n} · step ${bStep + 1}/${bag.steps.length}</span>` +
+      groups.map(g => `<span class="nc" title="${esc(pieceName(g.part))}, ${esc(COLOR_BY_ID[g.color].name)}">${mini(g)}<b>×${g.ids.length}</b></span>`).join('');
+    need.hidden = false;
+  } else need.hidden = true;
+  document.querySelectorAll<HTMLButtonElement>('#rail-act button').forEach(b => { const src = document.getElementById('b-' + b.dataset.act!) as HTMLButtonElement | null; b.disabled = !src || src.disabled; });
+}
+let toastTimer = 0 as any;
+function toast(t: string) {
+  const el = $('#toast'); if (!t) { el.hidden = true; return; }
+  el.textContent = t; el.className = t.startsWith('✗') ? 'err' : ''; el.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, t.startsWith('✗') ? 9000 : 6000);
+}
 
 // ---------- looks ----------
 document.querySelectorAll<HTMLElement>('#looks button').forEach(b => b.onclick = () => {
@@ -315,12 +351,14 @@ function renderBuild() {
   $('#b-undo')?.addEventListener('click', undo);
   $('#b-auto')?.addEventListener('click', placeOne);
   $('#b-finish')?.addEventListener('click', autoBuildBag);
+  syncBuildChrome();
   saveProgress();
 }
-function say(t: string) { bMsg = t; const m = document.querySelector('#b-msg'); if (m) { m.textContent = t; m.className = 'note' + (t.startsWith('✗') ? ' err' : ''); } }
+function say(t: string) { bMsg = t; toast(t); const m = document.querySelector('#b-msg'); if (m) { m.textContent = t; m.className = 'note' + (t.startsWith('✗') ? ' err' : ''); } }
 
 function openBag(i: number) {
   if (ripping || curBag !== -1) return;
+  setDrawer(false);
   const bag = bags[i]; ripping = true; curBag = i; bStep = 0; bagState[i] = 'open'; bHist = []; bMsg = '';
   renderBuild(); syncBuildScene();
   viewer.pile.openBag(bag.n, bag.parts.map(looseSpec), () => { ripping = false; say(`Bag ${bag.n} is empty. ${bag.parts.length} bricks are in the tray — go find the first ones.`); renderBuild(); syncBuildScene(); }, () => say('Riiiip!'));
@@ -330,6 +368,7 @@ function advance() {
   while (bStep < bag.steps.length && bag.steps[bStep].parts.every(p => bPlaced.has(p.id))) bStep++;
   if (bStep >= bag.steps.length) {
     bagState[curBag] = 'done'; const n = bag.n; curBag = -1; bHist = [];
+    if (allDone()) setDrawer(true);
     say(allDone() ? 'All bags built!' : `Bag ${n} built. Open bag ${n + 1} when you are ready.`);
   }
   renderBuild(); syncBuildScene();

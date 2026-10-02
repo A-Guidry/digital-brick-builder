@@ -14,6 +14,7 @@ async function startUpstream(mode = 'ok') {
       const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
       seen.push({ url: req.url, headers: req.headers, body });
       if (mode === 'error') { res.writeHead(500, { 'content-type': 'text/plain' }); return res.end('upstream says ' + SECRET_KEY); }
+      if (mode === 'flaky') { if (seen.length === 1) { res.writeHead(503); return res.end('busy'); } }
       if (mode === 'quota') { res.writeHead(429); return res.end('quota'); }
       if (mode === 'hang') return; // never answer
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -274,4 +275,12 @@ test('IPv6 clients share one bucket per /64; IPv4 and mapped addresses are uncha
   assert.notEqual(ipBucket('2001:db8:1:2::1'), ipBucket('2001:db8:1:3::1'));
   assert.equal(ipBucket('::ffff:203.0.113.5'), '203.0.113.5');
   assert.equal(ipBucket('203.0.113.5'), '203.0.113.5');
+});
+
+test('a single upstream 5xx is retried once and the user still gets an answer', async () => {
+  const s = await start({}, 'flaky');
+  const r = await s.post(REQ);
+  assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'qwen-reply' });
+  assert.equal(s.up.seen.length, 2);
+  await s.close();
 });

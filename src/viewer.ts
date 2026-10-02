@@ -182,7 +182,7 @@ export class Viewer {
       // Build view looks mostly straight down: fit the footprint to the screen's width and height separately,
       // so a tall phone screen gets a tall layout instead of a tiny, cropped wide one.
       const tv = Math.tan((this.camera.fov * Math.PI) / 360), th = tv * this.camera.aspect;
-      dist = Math.max((dx / 2) / th, ((dz * 0.85 + H * 0.55) / 2) / tv) * 1.25 + 2;
+      dist = Math.max((dx / 2) / th, ((dz * 0.85 + H * 0.55) / 2) / tv) * (this.camera.aspect < 1 ? 1.62 : 1.36) + 2;
     }
     const flat = H < Math.max(dx, dz) * 0.3;   // flat builds are easier to read from higher up
     const dir = (flat || includeTray ? new THREE.Vector3(0.22, 1.0, 0.62) : new THREE.Vector3(0.62, 0.52, 0.78)).normalize();
@@ -195,11 +195,11 @@ export class Viewer {
   enterBuild(maxBagParts: number) {
     if (!this.model) return;
     this.buildActive = true; this.resize();
-    const area = Math.max(90, maxBagParts * 6.5);
-    const w = THREE.MathUtils.clamp(Math.round(Math.sqrt(area * 1.5)), 14, 40), d = THREE.MathUtils.clamp(Math.ceil(area / w), 10, 30);
+    const area = Math.max(140, maxBagParts * 10);   // roomy: bricks can spread out and be stirred around without piling up
+    const w = THREE.MathUtils.clamp(Math.round(Math.sqrt(area * 1.5)), 18, 46), d = THREE.MathUtils.clamp(Math.ceil(area / w), 13, 34);
     const [sx, sz] = this.model.size;
     // landscape screens: tray beside the plate. Portrait (phones): tray in front of it, so both fill the width.
-    if (this.camera.aspect < 1) { const pw = Math.max(14, Math.min(w, Math.max(sx + 6, 18))), pd = Math.min(30, Math.max(10, Math.ceil(area / pw))); this.pile.setTray(0, sz / 2 + 2 + 3 + pd / 2, pw, pd); }
+    if (this.camera.aspect < 1) { const pw = Math.max(18, Math.min(w, Math.max(sx + 8, 22))), pd = Math.min(38, Math.max(13, Math.ceil(area / pw))); this.pile.setTray(0, sz / 2 + 2 + 3 + pd / 2, pw, pd); }
     else this.pile.setTray(sx / 2 + 2 + 3 + w / 2, 0, w, d);
     this.pile.setLook(this.look === 'studio');
     this.pile.show(true);

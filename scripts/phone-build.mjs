@@ -59,8 +59,8 @@ await touch('touchEnd'); await p.waitForTimeout(400);
 const sy1 = await p.evaluate(() => [window.scrollY, document.querySelector('#right').scrollTop]);
 ok('touch: swiping over the tray does not scroll the page', sy0.join() === sy1.join(), `${sy0} -> ${sy1}`);
 await p.screenshot({ path: `shots/mb-${which}-placed.png` });
-// 4) panel controls reachable (scroll the panel, buttons at least 36px tall)
-const btns = await p.evaluate(() => [...document.querySelectorAll('#tab-build button')].filter(b => b.getBoundingClientRect().width > 0).map(b => Math.round(b.getBoundingClientRect().height)));
+// 4) on-screen controls (icon rails; panel buttons only count while the drawer is open) are finger-sized
+const btns = await p.evaluate(() => [...document.querySelectorAll('#rail button, #rail-act button, #tab-build button')].filter(b => b.getBoundingClientRect().width > 0).map(b => Math.round(b.getBoundingClientRect().height)));
 ok('build buttons are finger-sized (>= 36px)', btns.length > 0 && btns.every(h => h >= 36), btns.join(','));
 ok('no page errors', errs.length === 0, errs.join('|'));
 await browser.close();

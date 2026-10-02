@@ -14,7 +14,7 @@ Hosted on GitHub Pages. Every push to `main` runs `.github/workflows/deploy.yml`
 
 ## AI setup (AI settings button)
 - Anthropic: paste a key (model default `claude-sonnet-4-5`, editable).
-- Gemini: paste a key (default `gemini-3.8-flash`, editable).
+- Gemini: paste a key (default `gemini-3.5-flash-lite`, editable).
 - Local: any OpenAI-compatible server (Ollama `http://localhost:11434/v1`, LM Studio `http://localhost:1234/v1`). Ollama needs `OLLAMA_ORIGINS="*"`. Pictures need a vision model.
 Keys live only in this browser's local storage.
 

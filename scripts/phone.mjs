@@ -27,6 +27,7 @@ await audit('create');
 for (const t of ['steps', 'parts', 'checks', 'saved']) { await p.tap(`#mnav [data-m=${t}]`); await audit(t); }
 await p.tap('#mnav [data-m=build]'); await audit('build-sealed');
 await p.tap('.bag.can'); await p.waitForFunction(() => window.__bf.viewer.pile.count() > 3, null, { timeout: 120000 }); await p.waitForTimeout(3500); await audit('build-open');
+await p.tap('#rail [data-m=create]'); await p.waitForTimeout(400); // the header is hidden while building; leave build mode first
 await p.tap('#btn-profile'); await audit('profile'); await p.tap('#pf-close');
 await p.tap('#btn-settings'); await audit('settings'); await p.keyboard.press('Escape');
 console.log('errors', errs.length, errs.slice(0, 2));

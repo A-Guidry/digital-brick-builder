@@ -4,6 +4,8 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { COLOR_BY_ID } from './catalog';
 
 const PLATE = 0.4;
+/** Feel of the tray. Stirring pushes with a speed (not just a force) so heavy bricks move too, and the pile stays awake longer. */
+export const TUNE = { radius: 2.6, power: 45, kick: 16, maxSpeed: 2.4, lift: 1.2, friction: 0.35, restitution: 0.12, damping: 0.03, sleepSpeed: 0.3, sleepTime: 0.5 };
 export interface LooseSpec { part: string; color: string; fx: number; fz: number; h: number }
 export interface Loose extends LooseSpec { uid: number; mesh: THREE.Mesh; body: CANNON.Body; mass: number; held: boolean; flying: boolean }
 export type MeshFactory = (p: LooseSpec) => THREE.Mesh;
@@ -36,7 +38,7 @@ export class Pile {
     this.world.allowSleep = true;
     this.world.broadphase = new CANNON.SAPBroadphase(this.world);
     (this.world.solver as CANNON.GSSolver).iterations = 12;
-    this.world.defaultContactMaterial = new CANNON.ContactMaterial(this.mat, this.mat, { friction: 0.45, restitution: 0.12 });
+    this.world.defaultContactMaterial = new CANNON.ContactMaterial(this.mat, this.mat, { friction: TUNE.friction, restitution: TUNE.restitution });
     this.group.visible = false; this.trayGroup.visible = false;
     scene.add(this.group, this.trayGroup);
   }
@@ -53,8 +55,8 @@ export class Pile {
       b.position.set(x, y, z); this.world.addBody(b); this.fixed.push(b);
     };
     box(cx, -2, cz, w / 2 + 1, 2, d / 2 + 1);                       // floor (thick, no tunnelling)
-    box(cx - w / 2 - 0.5, 4, cz, 0.5, 4, d / 2 + 1); box(cx + w / 2 + 0.5, 4, cz, 0.5, 4, d / 2 + 1);
-    box(cx, 4, cz - d / 2 - 0.5, w / 2 + 1, 4, 0.5); box(cx, 4, cz + d / 2 + 0.5, w / 2 + 1, 4, 0.5);
+    box(cx - w / 2 - 0.5, 7, cz, 0.5, 7, d / 2 + 1); box(cx + w / 2 + 0.5, 7, cz, 0.5, 7, d / 2 + 1);   // invisible walls are taller than the rim so hard swipes cannot launch bricks out
+    box(cx, 7, cz - d / 2 - 0.5, w / 2 + 1, 7, 0.5); box(cx, 7, cz + d / 2 + 0.5, w / 2 + 1, 7, 0.5);
     // visible tray: floor + low rim
     const floor = new THREE.Mesh(new THREE.BoxGeometry(w + 2, 0.4, d + 2), this.trayMat);
     floor.position.set(cx, -0.2, cz); floor.receiveShadow = true; this.trayGroup.add(floor);
@@ -88,8 +90,8 @@ export class Pile {
     body.quaternion.set(q.x, q.y, q.z, q.w);
     if (vel) body.velocity.set(vel.x, vel.y, vel.z);
     body.angularVelocity.set(rnd(-6, 6), rnd(-6, 6), rnd(-6, 6));
-    body.linearDamping = 0.03; body.angularDamping = 0.12;
-    body.allowSleep = true; body.sleepSpeedLimit = 0.3; body.sleepTimeLimit = 0.5;
+    body.linearDamping = TUNE.damping; body.angularDamping = 0.12;
+    body.allowSleep = true; body.sleepSpeedLimit = TUNE.sleepSpeed; body.sleepTimeLimit = TUNE.sleepTime;
     this.world.addBody(body);
     const l: Loose = { ...spec, uid: this.uid++, mesh, body, mass, held: false, flying: false };
     mesh.userData.loose = l.uid; mesh.castShadow = true; mesh.receiveShadow = true;
@@ -143,8 +145,8 @@ export class Pile {
 
   // ---- stirring ----
   /** Push bricks near a point along a horizontal delta (mouse hover or finger swipe). */
-  stir(at: THREE.Vector3, delta: THREE.Vector3, radius = 1.9) {
-    const speed = Math.min(1.6, delta.length());
+  stir(at: THREE.Vector3, delta: THREE.Vector3, radius = TUNE.radius) {
+    const speed = Math.min(TUNE.maxSpeed, delta.length());
     if (speed < 0.01) return 0;
     let n = 0;
     for (const l of this.loose.values()) {
@@ -152,9 +154,10 @@ export class Pile {
       const p = l.body.position, dx = p.x - at.x, dz = p.z - at.z, dist = Math.hypot(dx, dz);
       if (dist > radius + Math.max(l.fx, l.fz) / 2) continue;
       const fall = 1 - Math.min(1, dist / (radius + 2));
-      const k = l.mass * 14 * fall;
+      const k = l.mass * TUNE.power * fall;
       l.body.wakeUp();
-      l.body.applyImpulse(new CANNON.Vec3(delta.x * k + dx * 0.4 * l.mass * speed, 1.6 * l.mass * speed * fall, delta.z * k + dz * 0.4 * l.mass * speed));
+      l.body.applyImpulse(new CANNON.Vec3(delta.x * k + dx * 0.4 * l.mass * speed, TUNE.lift * l.mass * speed * fall, delta.z * k + dz * 0.4 * l.mass * speed));
+      if (TUNE.kick) { l.body.velocity.x += delta.x * TUNE.kick * fall; l.body.velocity.z += delta.z * TUNE.kick * fall; }  // mass-independent push
       l.body.angularVelocity.set(l.body.angularVelocity.x + rnd(-2, 2) * speed, l.body.angularVelocity.y + rnd(-3, 3) * speed, l.body.angularVelocity.z + rnd(-2, 2) * speed);
       n++;
     }

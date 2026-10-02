@@ -56,7 +56,7 @@ export function loadConfig(env) {
     timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, 3),
     anthropicKey: env.ANTHROPIC_API_KEY || '', anthropicModel: env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
     anthropicBase: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, ''),
-    geminiKey: env.GEMINI_API_KEY || '', geminiModel: env.GEMINI_MODEL || 'gemini-3.8-flash',
+    geminiKey: env.GEMINI_API_KEY || '', geminiModel: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
     geminiBase: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/+$/, ''),
     qwenBase: (env.QWEN_BASE_URL || '').replace(/\/+$/, ''), qwenModel: env.QWEN_MODEL || '', qwenKey: env.QWEN_API_KEY || '',
   };
@@ -117,7 +117,13 @@ async function callUpstream(cfg, system, msgs, signal) {
     body = toOpenAi(system, msgs, cfg);
     pick = j => j.choices?.[0]?.message?.content ?? '';
   }
-  const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  // One quick retry when the AI says it is overloaded or hiccuping (5xx); stays inside the overall timeout.
+  let r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  if (r.status >= 500 && !signal.aborted) {
+    await r.arrayBuffer().catch(() => {});
+    await new Promise(res => setTimeout(res, 1500));
+    r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  }
   if (!r.ok) { await r.arrayBuffer().catch(() => {}); return { status: r.status }; } // upstream body is never forwarded or logged
   return { text: pick(await r.json()) };
 }
