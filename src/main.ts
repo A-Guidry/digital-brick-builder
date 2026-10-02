@@ -11,7 +11,7 @@ import { makeBags, Bag } from './bags';
 import type { LooseSpec } from './pile';
 import { partsList, wantedListXml, csv } from './bricklink';
 import { PART_BY_ID, COLOR_BY_ID } from './catalog';
-import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, Settings, ProviderId } from './llm';
+import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, passcodeFromHash, Settings, ProviderId } from './llm';
 import { systemPrompt, userPrompt, Msg } from './prompt';
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -19,6 +19,9 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
 
 const viewer = new Viewer($('#view'));
 let settings: Settings = loadSettings();
+// A setup link (…/#pc=passcode) sets this device up for the shared server, then removes the passcode from the address bar.
+let setupViaLink = false;
+{ const pc = passcodeFromHash(location.hash); if (pc) { settings = { ...settings, provider: 'shared', sharedPasscode: pc }; saveSettings(settings); history.replaceState(null, '', location.pathname + location.search); setupViaLink = true; } }
 let model: Model | null = null, spec: ShapeSpec | null = null, report: Report | null = null, steps: Step[] = [], attempts: Attempt[] = [];
 let stepIdx = 0, currentPreset = '';
 let image: { mime: string; base64: string; url: string } | null = null;
@@ -686,7 +689,7 @@ $('#pf-erase').onclick = e => armThen(e.currentTarget as HTMLElement, 'Click aga
   if (!$('#tab-saved').hidden) renderSaved(); pfMsg('Profile erased from this browser. Your AI settings were not touched.');
 });
 
-refreshNote(); renderHud(); render();
+refreshNote(); if (setupViaLink) setNote('Shared AI is set up on this device. Describe something to build!'); renderHud(); render();
 applyProfileLook();
 refreshProfileButton();
 placeFoot(); setPanel(phone.matches ? 'create' : 'steps');

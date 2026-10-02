@@ -21,3 +21,9 @@
 - STILL OPEN: `brickbuilder` DNS (Hostinger) still points at the Hostinger placeholder; needs CNAME -> a-guidry.github.io. Commit/push and Pages custom domain wait on this.
 - 2026-10-01: DNS `brickbuilder` CNAME -> a-guidry.github.io done by owner. Pushed 4f89d24; Pages custom domain brickbuilder.arcwel.ai set, cert approved, HTTPS enforced; https://brickbuilder.arcwel.ai serves 200.
 - Acceptance: page loads with Shared server default + disclaimer, no console errors; wrong passcode -> plain message via real CORS; "a small red house" through the live proxy (Qwen qwen3.5:9b) passes the app's build checks (1 repair round, ~66 s). Not tested live: the 429 message (covered by automated tests; no real limit was hit), pictures, real phone, Anthropic spend (Anthropic not used).
+
+## 2026-10-02 local LLM gateway + setup link
+- Tailscale name of the Mac changed `agt-bmbp-llm` -> `agt-studio-llm` (`tailscale set --hostname`; macOS system name untouched). Old-name serve entries for :443/:80 -> :8080 are now stale (see README note below).
+- Mac: `tools/local-llm-gateway` installed via `local-llm-gateway install`: launchd agent `tech.arcwel.local-llm-gateway`, files in ~/.local/share/local-llm-gateway, log ~/Library/Logs/local-llm-gateway.log, tailscale serve `--https=8443` and `--tcp=11436` -> 127.0.0.1:11436. Undo: `local-llm-gateway uninstall`.
+- VPS: QWEN_BASE_URL -> http://100.126.162.57:11436/v1; added /opt/dbb-proxy/share-link.sh (prints a one-tap setup link; run it only in your own terminal).
+- The earlier `tailscale serve --tcp=11434` (to the PAIR proxy) is no longer used by the VPS and can be removed: `tailscale --socket=$HOME/.config/tailscale/tailscaled.sock serve --tcp=11434 off`.

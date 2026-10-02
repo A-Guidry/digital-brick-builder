@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# local-llm-gateway: install / inspect / remove the gateway that makes this Mac's local LLM usable from the tailnet.
+#   local-llm-gateway install [--dry-run]     copy files, add a launchd agent, publish on the tailnet
+#   local-llm-gateway status [--json]         is it running, healthy, and what are the addresses
+#   local-llm-gateway restart | logs | uninstall [--dry-run]
+set -euo pipefail
+LABEL="tech.arcwel.local-llm-gateway"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEST="$HOME/.local/share/local-llm-gateway"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOG="$HOME/Library/Logs/local-llm-gateway.log"
+PORT="${GATEWAY_PORT:-11436}"; HTTPS_PORT="${GATEWAY_HTTPS_PORT:-8443}"
+UPSTREAM="${GATEWAY_UPSTREAM:-http://127.0.0.1:11435}"
+ORIGINS="${GATEWAY_ORIGINS:-https://brickbuilder.arcwel.ai}"
+NODE="$(command -v node || true)"
+SOCK="$HOME/.config/tailscale/tailscaled.sock"
+ts() { if [ -S "$SOCK" ]; then tailscale --socket="$SOCK" "$@"; else tailscale "$@"; fi; }
+DRY=0; JSON=0
+cmd="${1:-status}"; shift || true
+for a in "$@"; do case "$a" in --dry-run) DRY=1;; --json) JSON=1;; *) echo "unknown option: $a" >&2; exit 2;; esac; done
+run() { if [ "$DRY" = 1 ]; then echo "[dry-run] $*"; else "$@"; fi; }
+dns() { ts status --self --json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true; }
+tsip() { ts ip -4 2>/dev/null | head -1 || true; }
+loaded() { launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; }
+health() { curl -s -m4 "http://127.0.0.1:$PORT/gateway/health" 2>/dev/null || true; }
+
+case "$cmd" in
+  install)
+    [ -n "$NODE" ] || { echo "node not found" >&2; exit 1; }
+    [ -f "$HERE/gateway.mjs" ] || { echo "gateway.mjs not found next to this script" >&2; exit 1; }
+    run mkdir -p "$DEST" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+    run cp "$HERE/gateway.mjs" "$DEST/gateway.mjs"
+    if [ "$DRY" = 1 ]; then echo "[dry-run] write $PLIST (node=$NODE port=$PORT upstream=$UPSTREAM origins=$ORIGINS)"; else
+cat > "$PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array><string>$NODE</string><string>$DEST/gateway.mjs</string></array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PORT</key><string>$PORT</string><key>HOST</key><string>127.0.0.1</string>
+    <key>UPSTREAM</key><string>$UPSTREAM</string><key>ALLOWED_ORIGINS</key><string>$ORIGINS</string>
+  </dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG</string><key>StandardErrorPath</key><string>$LOG</string>
+</dict></plist>
+PL
+    fi
+    if loaded && [ "$DRY" = 0 ]; then launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true; fi
+    run launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    run ts serve --bg --https="$HTTPS_PORT" "http://127.0.0.1:$PORT"
+    run ts serve --bg --tcp="$PORT" "tcp://127.0.0.1:$PORT"
+    [ "$DRY" = 1 ] && exit 0
+    sleep 2; echo "health: $(health)"
+    echo "tailnet (browsers, any app):  https://$(dns):$HTTPS_PORT/v1"
+    echo "tailnet (servers, plain):     http://$(tsip):$PORT/v1"
+    ;;
+  status)
+    L=false; loaded && L=true; H="$(health)"; D="$(dns)"; I="$(tsip)"
+    if [ "$JSON" = 1 ]; then
+      python3 - "$L" "${H:-null}" "$D" "$I" "$PORT" "$HTTPS_PORT" <<'PY'
+import json,sys
+l,h,d,i,p,hp=sys.argv[1:7]
+try: health=json.loads(h)
+except Exception: health=None
+print(json.dumps({"launchd_loaded": l=="true","health": health,"local": f"http://127.0.0.1:{p}/v1","tailnet_https": f"https://{d}:{hp}/v1" if d else None,"tailnet_tcp": f"http://{i}:{p}/v1" if i else None}))
+PY
+    else
+      echo "launchd agent: $($L && echo loaded || echo NOT loaded)"; echo "health:        ${H:-no answer}"
+      echo "local:         http://127.0.0.1:$PORT/v1"; echo "tailnet https: https://$D:$HTTPS_PORT/v1"; echo "tailnet plain: http://$I:$PORT/v1"
+    fi
+    ;;
+  restart) launchctl kickstart -k "gui/$(id -u)/$LABEL"; sleep 1; echo "health: $(health)";;
+  logs) tail -n 40 "$LOG";;
+  uninstall)
+    if loaded || [ "$DRY" = 1 ]; then run launchctl bootout "gui/$(id -u)/$LABEL" || true; fi
+    run ts serve --https="$HTTPS_PORT" off || true
+    run ts serve --tcp="$PORT" off || true
+    run rm -f "$PLIST"; run rm -rf "$DEST"
+    echo "removed (the log stays at $LOG)";;
+  *) echo "usage: local-llm-gateway install|status|restart|logs|uninstall [--dry-run] [--json]" >&2; exit 2;;
+esac

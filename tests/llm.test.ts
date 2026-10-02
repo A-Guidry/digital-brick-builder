@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { complete, testConnection, isConfigured, clearKeys, loadSettings, saveSettings, missingSetting, listLocalModels, DEFAULTS, Settings } from '../src/llm';
+import { complete, testConnection, isConfigured, clearKeys, loadSettings, saveSettings, missingSetting, listLocalModels, passcodeFromHash, DEFAULTS, Settings } from '../src/llm';
 
 const shared = (over: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, provider: 'shared', sharedUrl: 'https://proxy.example/', sharedPasscode: ' secret-code ', ...over });
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -64,7 +64,7 @@ const ask = (s: Settings) => complete(s, 'sys', [{ role: 'user', text: 'hi' }]);
 
 describe('empty boxes are caught before any request', () => {
   it('names what is missing for every provider', () => {
-    expect(missingSetting(gem({ geminiKey: '  ' }))).toMatch(/No Gemini key entered.*AIza/);
+    expect(missingSetting(gem({ geminiKey: '  ' }))).toMatch(/No Gemini key entered.*aistudio\.google\.com\/apikey/);
     expect(missingSetting({ ...DEFAULTS, provider: 'anthropic', anthropicKey: '' })).toMatch(/No Anthropic key entered/);
     expect(missingSetting(shared({ sharedPasscode: '' }))).toMatch(/passcode/);
     expect(missingSetting(loc({ localModel: '' }))).toMatch(/Find installed models/);
@@ -119,5 +119,15 @@ describe('finding installed local models', () => {
     await expect(listLocalModels(loc())).rejects.toThrow(/Could not reach the local model server/);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('Forbidden', { status: 403 })));
     await expect(listLocalModels(loc())).rejects.toThrow(/refused this website/);
+  });
+});
+
+describe('setup links', () => {
+  it('reads a passcode from #pc= and decodes it (base64 passcodes contain + / =)', () => {
+    expect(passcodeFromHash('#pc=AAAA%2Bbbb%2Fcc%3D%3Ddddd1234')).toBe('AAAA+bbb/cc==dddd1234');
+    expect(passcodeFromHash('#pc=simple-code-12345')).toBe('simple-code-12345');
+  });
+  it('ignores everything that is not a setup link, including share links and junk', () => {
+    for (const h of ['', '#', '#s=abc123', '#pc=', '#pc=short', '#pc=has space here1', '#pc=%E0%A4%A', '#pc=ok-code-12345&x=1', '#x=#pc=ok-code-12345', '#pc=' + 'a'.repeat(201)]) expect(passcodeFromHash(h), h).toBeNull();
   });
 });

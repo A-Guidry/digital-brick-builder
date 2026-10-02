@@ -29,11 +29,19 @@ export function isConfigured(s: Settings): boolean {
 }
 
 type Who = 'anthropic' | 'gemini' | 'local';
+/** A setup link "…/#pc=<passcode>" opens the app already pointed at the shared server. Returns the passcode, or null if the address is not one. */
+export function passcodeFromHash(hash: string): string | null {
+  const m = hash.match(/^#pc=([^&]+)$/); if (!m) return null;
+  let v = ''; try { v = decodeURIComponent(m[1]); } catch { return null; }
+  v = v.trim();
+  return v.length >= 8 && v.length <= 200 && !/[\u0000-\u001f\u007f\s]/.test(v) ? v : null;
+}
+
 /** Says what is missing BEFORE any request is made, so an empty box never turns into a confusing error from the provider. */
 export function missingSetting(s: Settings): string {
   if (s.provider === 'shared') return s.sharedPasscode.trim() ? '' : 'Enter the passcode you were given in the box above, then try again.';
   if (s.provider === 'anthropic') return s.anthropicKey.trim() ? '' : 'No Anthropic key entered yet. Paste your key (it starts with "sk-ant-") in the box above, then try again.';
-  if (s.provider === 'gemini') return s.geminiKey.trim() ? '' : 'No Gemini key entered yet. Paste your key (it starts with "AIza"; you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
+  if (s.provider === 'gemini') return s.geminiKey.trim() ? '' : 'No Gemini key entered yet. Paste your key (you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
   if (!s.localUrl.trim()) return 'Enter the address of your local model server (for Ollama: http://localhost:11434/v1).';
   return s.localModel.trim() ? '' : 'Enter a model name, or press "Find installed models".';
 }
@@ -45,7 +53,7 @@ async function readError(r: Response, who: Who, model = ''): Promise<string> {
   msg = msg.replace(/\s+/g, ' ').trim().slice(0, 220);
   const st = r.status, tail = msg ? ` (${msg})` : '';
   if (who === 'gemini') {
-    if (/unregistered callers|without established identity/i.test(msg)) return `Google received no API key. Paste your key (it starts with "AIza") into the Gemini box and try again.${tail}`;
+    if (/unregistered callers|without established identity/i.test(msg)) return `Google received no API key. Paste your key into the Gemini box and try again.${tail}`;
     if (st === 400 && /API key not valid|API_KEY_INVALID/i.test(msg)) return `Google says that API key is not valid. Copy it again from aistudio.google.com/apikey and paste it with no spaces.${tail}`;
     if (st === 403) return `Google refused this key from this website (403). If you limited the key to certain websites or apps in Google AI Studio or Cloud, allow brickbuilder.arcwel.ai or make a new unrestricted key.${tail}`;
     if (st === 404) return `Google does not offer the model "${model}" to your key (404). Try gemini-3.5-flash-lite in the Model box.${tail}`;

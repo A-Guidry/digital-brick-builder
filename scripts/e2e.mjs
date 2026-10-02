@@ -283,6 +283,18 @@ async function mockProxy(page, replies, seen) {
   check('shared: picture is sent as {mime, base64} on the message', m0?.image?.mime === 'image/jpeg' && m0.image.base64.length > 500);
   await p.context().close();
 }
+{ // C10 setup link: opens already set up for the shared server and removes the passcode from the address bar
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 860 } }); const p = await ctx.newPage(); p.errors = [];
+  p.on('pageerror', e => p.errors.push(e.message));
+  await p.goto(url + '#pc=AAAA%2Bbbb%2Fcc%3D%3Ddddd1234', { timeout: 120000 });
+  await p.waitForFunction(() => window.__bf?.model, null, { timeout: 40000 });
+  const r = await p.evaluate(() => { const s = JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{}'); return { provider: s.provider, pc: s.sharedPasscode, hash: location.hash, note: document.getElementById('ai-note').textContent, history: history.length }; });
+  check('setup link: stores the passcode and picks the shared server', r.provider === 'shared' && r.pc === 'AAAA+bbb/cc==dddd1234', JSON.stringify({ provider: r.provider, len: (r.pc || '').length }));
+  check('setup link: the passcode is removed from the address bar', r.hash === '', r.hash);
+  check('setup link: says the device is set up', /set up on this device/.test(r.note), r.note);
+  check('setup link: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await ctx.close();
+}
 { // C7 gemini
   const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-3.5-flash-lite' });
   await p.route('https://generativelanguage.googleapis.com/**', async route => {
@@ -439,7 +451,7 @@ async function mockProxy(page, replies, seen) {
   await p.route('https://generativelanguage.googleapis.com/**', r => { seen.push(r.request().url()); r.fulfill({ status: 403, headers: cors, contentType: 'application/json', body: '{"error":{"message":"Method doesn\'t allow unregistered callers"}}' }); });
   await p.click('#btn-settings'); await p.click('#test');
   await p.waitForFunction(() => { const t = document.querySelector('#test-out').textContent; return t && t !== 'Testing…'; });
-  check('settings: Test with an empty Gemini key says to paste a key', /No Gemini key entered yet.*AIza/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
+  check('settings: Test with an empty Gemini key says to paste a key', /No Gemini key entered yet.*aistudio/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
   check('settings: ...and sends nothing to Google', seen.length === 0, String(seen.length));
   await p.context().close();
 }
