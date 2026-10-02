@@ -1,0 +1,34 @@
+// Tailscale access rules for the owner's tailnet (draft: nothing has been applied).
+// Paste into https://login.tailscale.com/admin/acls/file  (Access controls -> Edit file).
+// BEFORE saving: copy the current file somewhere safe so you can roll back.
+//
+// What this does
+//   Today every device can reach every port on every other device. This limits the Mac's ports to what is actually used:
+//     VPS    -> Mac : 11436 (local-LLM gateway, plain) and 8443 (gateway, HTTPS)         [shared-AI proxy uses these]
+//     iPhone -> Mac : 8787 (HazzMate API), 8443 (gateway HTTPS), 443 and 80 (older web entry)
+//     Mac    -> everything (so your own machine can reach the VPS and the phone)
+//   Ports such as 11434 (PAIR proxy) and 11435 (real Ollama) become unreachable from the VPS and the phone.
+//
+// Why it is safe to try: the "tests" block at the bottom is checked by Tailscale when you press Save.
+// If any test fails, the file is rejected and nothing changes.
+//
+// If something you use stops working, add its port to the matching rule, or paste your old file back.
+{
+  "hosts": {
+    "mac":   "100.126.162.57",   // agt-studio-llm
+    "vps":   "100.123.119.96",   // arcwel-vps
+    "phone": "100.68.49.37",     // iphone182
+  },
+
+  "acls": [
+    { "action": "accept", "src": ["vps"],   "dst": ["mac:11436,8443"] },
+    { "action": "accept", "src": ["phone"], "dst": ["mac:8787,8443,443,80"] },
+    { "action": "accept", "src": ["mac"],   "dst": ["*:*"] },
+  ],
+
+  "tests": [
+    { "src": "vps",   "accept": ["mac:11436", "mac:8443"], "deny": ["mac:11434", "mac:11435", "mac:8787"] },
+    { "src": "phone", "accept": ["mac:8787", "mac:8443"],  "deny": ["mac:11434", "mac:11435", "mac:11436"] },
+    { "src": "mac",   "accept": ["vps:22", "phone:8080"] },
+  ],
+}
