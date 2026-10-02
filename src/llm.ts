@@ -24,7 +24,7 @@ export function saveSettings(s: Settings) { try { localStorage.setItem(KEY, JSON
 export function clearKeys() { const s = loadSettings(); s.anthropicKey = ''; s.geminiKey = ''; s.sharedPasscode = ''; saveSettings(s); }
 
 export function isConfigured(s: Settings): boolean {
-  if (s.provider === 'shared') return !!s.sharedUrl.trim() && !!s.sharedPasscode.trim();
+  if (s.provider === 'shared') return !!s.sharedUrl.trim();   // a passcode is optional: without one you are a free guest with a daily allowance
   return s.provider === 'anthropic' ? !!s.anthropicKey.trim() : s.provider === 'gemini' ? !!s.geminiKey.trim() : !!s.localUrl.trim() && !!s.localModel.trim();
 }
 
@@ -39,7 +39,7 @@ export function passcodeFromHash(hash: string): string | null {
 
 /** Says what is missing BEFORE any request is made, so an empty box never turns into a confusing error from the provider. */
 export function missingSetting(s: Settings): string {
-  if (s.provider === 'shared') return s.sharedPasscode.trim() ? '' : 'Enter the passcode you were given in the box above, then try again.';
+  if (s.provider === 'shared') return s.sharedUrl.trim() ? '' : 'The shared server address is empty. Clear it to use the default, or choose another AI.';
   if (s.provider === 'anthropic') return s.anthropicKey.trim() ? '' : 'No Anthropic key entered yet. Paste your key (it starts with "sk-ant-") in the box above, then try again.';
   if (s.provider === 'gemini') return s.geminiKey.trim() ? '' : 'No Gemini key entered yet. Paste your key (you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
   if (!s.localUrl.trim()) return 'Enter the address of your local model server (for Ollama: http://localhost:11434/v1).';
@@ -88,13 +88,19 @@ export async function listLocalModels(s: Settings): Promise<string[]> {
   return (j.data ?? j.models ?? []).map((m: any) => String(m.id ?? m.name ?? '')).filter(Boolean);
 }
 
+/** A random id for this browser, so each person gets their own daily allowance even when they share a home internet connection. Not personal data. */
+export function guestId(): string {
+  const make = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9]/g, '').padEnd(24, '0').slice(0, 40);
+  try { let g = localStorage.getItem('dbb.guest'); if (!g || !/^[A-Za-z0-9_-]{16,64}$/.test(g)) { g = make(); localStorage.setItem('dbb.guest', g); } return g; } catch { return make(); }
+}
+
 /** Shared server: the proxy holds the AI credentials; we send only the passcode. Its error text is already plain language. */
 async function completeShared(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
   let r: Response;
   try {
     r = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/v1/ai`, {
       method: 'POST', signal,
-      headers: { 'content-type': 'application/json', 'x-dbb-passcode': s.sharedPasscode.trim() },
+      headers: { 'content-type': 'application/json', 'x-dbb-guest': guestId(), ...(s.sharedPasscode.trim() ? { 'x-dbb-passcode': s.sharedPasscode.trim() } : {}) },
       body: JSON.stringify({ system, messages: msgs.map(m => ({ role: m.role, text: m.text, ...(m.image ? { image: { mime: m.image.mime, base64: m.image.base64 } } : {}) })) }),
     });
   } catch (e) { throw netHint(e, 'the shared server'); }

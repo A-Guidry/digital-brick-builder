@@ -214,7 +214,7 @@ test('logs never contain prompts, passcodes, keys or raw IPs; one line per reque
   await new Promise(r => setTimeout(r, 50));
   const all = s.logs.join('\n');
   for (const bad of ['SECRET-SYSTEM', 'SECRET-PROMPT', CODE, 'WRONG-CODE-XYZ', SECRET_KEY, '198.51.100.77']) assert.ok(!all.includes(bad), `log leaked ${bad}`);
-  assert.equal(s.logs.length, 2); assert.match(s.logs[0], /who=ann ip=[0-9a-f]{10} status=200 ms=\d+/);
+  assert.equal(s.logs.length, 2); assert.match(s.logs[0], /who=ann ip=[0-9a-f]{10} status=200 via=qwen ms=\d+/);
   await s.close();
 });
 
@@ -283,4 +283,146 @@ test('a single upstream 5xx is retried once and the user still gets an answer', 
   assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'qwen-reply' });
   assert.equal(s.up.seen.length, 2);
   await s.close();
+});
+
+const GID = 'guest-browser-id-0123456789';
+test('guest access is OFF by default: no passcode means 401', async () => {
+  const s = await start();
+  const r = await s.post(REQ, { code: '' }); assert.equal(r.status, 401);
+  await s.close();
+});
+test('guest access ON: the real website works with no passcode and no key', async () => {
+  const s = await start({ OPEN_ACCESS: '1' });
+  const r = await s.post(REQ, { code: '', headers: { 'x-dbb-guest': GID } });
+  assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'qwen-reply' });
+  assert.match(s.logs.join('\n') + '', /./); await s.close();
+});
+test('guest access needs a browser from an allowed website; a script with no Origin is refused', async () => {
+  const s = await start({ OPEN_ACCESS: '1' });
+  assert.equal((await s.post(REQ, { code: '', origin: '' })).status, 401);
+  assert.equal((await s.post(REQ, { code: '', origin: 'https://evil.example' })).status, 403);
+  assert.equal(s.up.seen.length, 0); await s.close();
+});
+test('each guest browser gets its own daily allowance, even from the same house (same IP)', async () => {
+  const s = await start({ OPEN_ACCESS: '1', LIMIT_DAY: 'qwen:2', GUEST_IP_DAY: '10' });
+  const as = (id) => s.post(REQ, { code: '', headers: { 'x-dbb-guest': id, 'x-forwarded-for': '203.0.113.7' } });
+  assert.equal((await as('kid-one-browser-id-000001')).status, 200); assert.equal((await as('kid-one-browser-id-000001')).status, 200);
+  const third = await as('kid-one-browser-id-000001'); assert.equal(third.status, 429); assert.match((await third.json()).error, /free builds for today/);
+  assert.equal((await as('kid-two-browser-id-000002')).status, 200);   // a sibling on the same Wi-Fi is not blocked
+  await s.close();
+});
+test('the house (IP) has its own cap, so rotating browser ids does not give unlimited builds', async () => {
+  const s = await start({ OPEN_ACCESS: '1', LIMIT_DAY: 'qwen:5', GUEST_IP_DAY: '3' });
+  let ok = 0, blocked = 0;
+  for (let i = 0; i < 6; i++) { const r = await s.post(REQ, { code: '', headers: { 'x-dbb-guest': 'rotating-browser-id-' + String(i).padStart(4, '0'), 'x-forwarded-for': '203.0.113.9' } }); r.status === 200 ? ok++ : blocked++; }
+  assert.equal(ok, 3); assert.equal(blocked, 3); await s.close();
+});
+test('all guests together have a daily cap, and it never uses up the family allowance', async () => {
+  const s = await start({ OPEN_ACCESS: '1', GUEST_GLOBAL_DAY: '2' });
+  const g = (n) => s.post(REQ, { code: '', headers: { 'x-dbb-guest': 'global-test-browser-' + String(n).padStart(4, '0'), 'x-forwarded-for': '198.51.100.' + n } });
+  assert.equal((await g(1)).status, 200); assert.equal((await g(2)).status, 200);
+  const r = await g(3); assert.equal(r.status, 429); assert.match((await r.json()).error, /free builds for everyone are used up/);
+  assert.equal((await s.post(REQ, { headers: { 'x-forwarded-for': '198.51.100.99' } })).status, 200);   // family passcode still works
+  await s.close();
+});
+test('a WRONG passcode is still refused even with guest access on; a guest id alone cannot fake a passcode', async () => {
+  const s = await start({ OPEN_ACCESS: '1' });
+  assert.equal((await s.post(REQ, { code: 'not-the-passcode-123456', headers: { 'x-dbb-guest': GID } })).status, 401);
+  await s.close();
+});
+test('a missing or malformed guest id falls back to the connection limit only', async () => {
+  const s = await start({ OPEN_ACCESS: '1', LIMIT_DAY: 'qwen:2' });
+  const h = { 'x-forwarded-for': '203.0.113.50' };
+  assert.equal((await s.post(REQ, { code: '', headers: h })).status, 200);
+  assert.equal((await s.post(REQ, { code: '', headers: { ...h, 'x-dbb-guest': 'short' } })).status, 200);
+  assert.equal((await s.post(REQ, { code: '', headers: h })).status, 429);
+  await s.close();
+});
+test('preflight allows the guest header', async () => {
+  const s = await start({ OPEN_ACCESS: '1' });
+  const r = await fetch(s.base + '/v1/ai', { method: 'OPTIONS', headers: { origin: SITE, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-dbb-guest' } });
+  assert.match(r.headers.get('access-control-allow-headers'), /x-dbb-guest/);
+  await s.close();
+});
+
+// ---------- UPSTREAM=auto: local AI first, Gemini as the automatic backup ----------
+/** Two fake AIs: the local one (qwen format) and Gemini. mode: ok | error | hang | dead */
+async function startAuto({ qwen = 'ok', gemini = 'ok', env = {} } = {}) {
+  const q = await startUpstream(qwen === 'dead' ? 'ok' : qwen), g = await startUpstream(gemini);
+  if (qwen === 'dead') await q.close();
+  const logs = [];
+  const cfg = loadConfig({
+    UPSTREAM: 'auto', PASSCODES: `ann:${CODE}`, ALLOWED_ORIGINS: SITE, OPEN_ACCESS: '1',
+    QWEN_BASE_URL: q.url + '/v1', QWEN_MODEL: 'qwen-test', GEMINI_API_KEY: SECRET_KEY, GEMINI_BASE_URL: g.url,
+    AUTO_PRIMARY_TIMEOUT_MS: '400', AUTO_FALLBACK_TIMEOUT_MS: '2000', ...env,
+  });
+  const proxy = createProxy(cfg, { log: l => logs.push(l) });
+  await new Promise(r => proxy.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${proxy.address().port}`;
+  const post = (headers = {}) => fetch(base + '/v1/ai', { method: 'POST', headers: { 'content-type': 'application/json', origin: SITE, 'x-dbb-passcode': CODE, ...headers }, body: JSON.stringify(REQ) });
+  return { post, q, g, logs, close: async () => { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); if (qwen !== 'dead') await q.close(); await g.close(); } };
+}
+const guestHdr = (n = 1, ip = '203.0.113.1') => ({ 'x-dbb-passcode': '', 'x-dbb-guest': 'auto-test-browser-' + String(n).padStart(4, '0'), 'x-forwarded-for': ip });
+const chatCalls = (u) => u.seen.filter(x => x.url.includes('/chat/completions') || x.url.includes(':generateContent')).length;
+
+test('auto: the local AI answers when it is healthy, and Gemini is never called', async () => {
+  const s = await startAuto();
+  try {
+    const r = await s.post(); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'qwen-reply' });
+    assert.equal(chatCalls(s.g), 0); assert.match(s.logs.join('\n'), /via=qwen/);
+  } finally { await s.close(); }
+});
+test('auto: if the local AI is off (Mac asleep), Gemini answers, and later requests skip the dead one quickly', async () => {
+  const s = await startAuto({ qwen: 'dead' });
+  try {
+    const r = await s.post(); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' });
+    const t1 = Date.now(); const r2 = await s.post(); assert.equal(r2.status, 200);
+    assert.ok(Date.now() - t1 < 1500, 'second request should not wait on the dead local AI');
+    assert.match(s.logs.join('\n'), /via=gemini/);
+  } finally { await s.close(); }
+});
+test('auto: if the local AI errors, Gemini takes over for that request', async () => {
+  const s = await startAuto({ qwen: 'error' });
+  try { const r = await s.post(); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' }); } finally { await s.close(); }
+});
+test('auto: if the local AI is too slow, Gemini takes over', async () => {
+  const s = await startAuto({ qwen: 'hang' });
+  try { const r = await s.post(); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' }); } finally { await s.close(); }
+});
+test('auto: if both fail, the user gets a plain error and no allowance is lost', async () => {
+  const s = await startAuto({ qwen: 'error', gemini: 'error', env: { LIMIT_DAY: 'qwen:1,gemini:1' } });
+  try {
+    const r = await s.post(); assert.equal(r.status, 502); assert.ok(!JSON.stringify(await r.json()).includes(SECRET_KEY));
+    assert.equal((await s.post()).status, 502);        // not 429: the failed tries were refunded
+  } finally { await s.close(); }
+});
+test('auto: the Gemini backup has its own smaller daily allowance; a healthy local AI is unaffected by it', async () => {
+  const s = await startAuto({ qwen: 'error', env: { LIMIT_DAY: 'qwen:60,gemini:1' } });
+  try {
+    assert.equal((await s.post()).status, 200);          // falls back to Gemini (1 of 1)
+    const r = await s.post(); assert.equal(r.status, 429); assert.match((await r.json()).error, /main AI is resting.*backup allowance/);
+  } finally { await s.close(); }
+  const ok = await startAuto({ env: { LIMIT_DAY: 'qwen:60,gemini:1' } });
+  try { for (let i = 0; i < 4; i++) assert.equal((await ok.post()).status, 200); } finally { await ok.close(); }
+});
+test('auto: guests (no passcode) get the same local-first behaviour', async () => {
+  const s = await startAuto();
+  try { const r = await s.post(guestHdr()); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'qwen-reply' }); } finally { await s.close(); }
+  const d = await startAuto({ qwen: 'dead' });
+  try { const r2 = await d.post(guestHdr()); assert.equal(r2.status, 200); assert.deepEqual(await r2.json(), { text: 'gemini-reply' }); } finally { await d.close(); }
+});
+test('auto: guests on the Gemini backup are capped separately and cannot use up the family allowance', async () => {
+  const s = await startAuto({ qwen: 'dead', env: { GUEST_GLOBAL_GEMINI_DAY: '2', LIMIT_DAY: 'qwen:60,gemini:50' } });
+  try {
+    assert.equal((await s.post(guestHdr(1, '198.51.100.1'))).status, 200);
+    assert.equal((await s.post(guestHdr(2, '198.51.100.2'))).status, 200);
+    const r = await s.post(guestHdr(3, '198.51.100.3')); assert.equal(r.status, 429); assert.match((await r.json()).error, /free builds for everyone are used up/);
+    assert.equal((await s.post()).status, 200);          // the family passcode still works
+  } finally { await s.close(); }
+});
+test('auto needs both the local AI and Gemini configured', () => {
+  const base = { UPSTREAM: 'auto', PASSCODES: `a:${CODE}`, ALLOWED_ORIGINS: SITE };
+  assert.throws(() => loadConfig(base), /QWEN_BASE_URL is required/);
+  assert.throws(() => loadConfig(base), /GEMINI_API_KEY is required/);
+  assert.doesNotThrow(() => loadConfig({ ...base, QWEN_BASE_URL: 'http://x/v1', QWEN_MODEL: 'm', GEMINI_API_KEY: 'k' }));
 });

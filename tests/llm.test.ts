@@ -11,10 +11,28 @@ describe('shared server provider', () => {
     expect(DEFAULTS.sharedUrl).toMatch(/^https:\/\//);
     expect(DEFAULTS.sharedPasscode).toBe('');
   });
-  it('is configured only when a passcode is present', () => {
-    expect(isConfigured(shared({ sharedPasscode: '' }))).toBe(false);
-    expect(isConfigured(shared({ sharedPasscode: '   ' }))).toBe(false);
-    expect(isConfigured(shared())).toBe(true);
+  it('needs no passcode: a first-time visitor is ready to go as a free guest', () => {
+    expect(isConfigured(shared({ sharedPasscode: '' }))).toBe(true);
+    expect(isConfigured({ ...DEFAULTS })).toBe(true);
+    expect(isConfigured(shared({ sharedUrl: '' }))).toBe(false);
+  });
+  it('sends a per-browser guest id and no passcode header when there is no passcode', async () => {
+    const store: Record<string, string> = {};
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store[k] ?? null, setItem: (k: string, v: string) => { store[k] = v; } });
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json(200, { text: 'hi' }))); vi.stubGlobal('fetch', f);
+    await complete(shared({ sharedPasscode: '' }), 's', [{ role: 'user', text: 'x' }]);
+    await complete(shared({ sharedPasscode: '' }), 's', [{ role: 'user', text: 'y' }]);
+    const h1 = f.mock.calls[0][1].headers, h2 = f.mock.calls[1][1].headers;
+    expect(h1['x-dbb-passcode']).toBeUndefined();
+    expect(h1['x-dbb-guest']).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
+    expect(h2['x-dbb-guest']).toBe(h1['x-dbb-guest']);       // the same browser keeps the same id
+    expect(store['dbb.guest']).toBe(h1['x-dbb-guest']);
+  });
+  it('still sends the passcode when there is one', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    const f = vi.fn().mockResolvedValue(json(200, { text: 'hi' })); vi.stubGlobal('fetch', f);
+    await complete(shared(), 's', [{ role: 'user', text: 'x' }]);
+    expect(f.mock.calls[0][1].headers['x-dbb-passcode']).toBe('secret-code');
   });
   it('posts system + messages (with image) and the passcode header to /v1/ai, and returns the text', async () => {
     const f = vi.fn().mockResolvedValue(json(200, { text: 'hello' })); vi.stubGlobal('fetch', f);
@@ -66,7 +84,8 @@ describe('empty boxes are caught before any request', () => {
   it('names what is missing for every provider', () => {
     expect(missingSetting(gem({ geminiKey: '  ' }))).toMatch(/No Gemini key entered.*aistudio\.google\.com\/apikey/);
     expect(missingSetting({ ...DEFAULTS, provider: 'anthropic', anthropicKey: '' })).toMatch(/No Anthropic key entered/);
-    expect(missingSetting(shared({ sharedPasscode: '' }))).toMatch(/passcode/);
+    expect(missingSetting(shared({ sharedPasscode: '' }))).toBe('');          // shared needs no passcode now
+    expect(missingSetting(shared({ sharedUrl: '' }))).toMatch(/address is empty/);
     expect(missingSetting(loc({ localModel: '' }))).toMatch(/Find installed models/);
     expect(missingSetting(gem())).toBe('');
   });

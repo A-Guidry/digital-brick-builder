@@ -1,11 +1,13 @@
 // Digital Brick Builder: shared AI proxy. Node 20+, no dependencies.
 // Holds the AI credentials, checks a passcode, rate-limits, and forwards ONE kind of request to ONE upstream
-// chosen by the server (UPSTREAM=qwen|gemini|anthropic). The browser never picks the model or the upstream.
+// chosen by the server (UPSTREAM=qwen|gemini|anthropic, or auto = local qwen first, Gemini as the automatic backup).
+// The browser never picks the model or the upstream.
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
-const UPSTREAMS = ['qwen', 'gemini', 'anthropic'];
+const UPSTREAMS = ['auto', 'qwen', 'gemini', 'anthropic'];
+const LIMIT_KEYS = ['qwen', 'gemini', 'anthropic'];
 const IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const HOUR = 3_600_000, DAY = 86_400_000;
 const MIN_CODE = 16;                 // shortest passcode accepted at startup
@@ -18,7 +20,7 @@ function parseMap(s, what) {
   for (const part of String(s || '').split(',').map(x => x.trim()).filter(Boolean)) {
     const [k, v] = part.split(':');
     const n = Number(v);
-    if (!UPSTREAMS.includes(k) || !Number.isFinite(n) || n < 0) throw new Error(`${what}: bad entry "${part}" (use name:number, names ${UPSTREAMS.join('/')})`);
+    if (!LIMIT_KEYS.includes(k) || !Number.isFinite(n) || n < 0) throw new Error(`${what}: bad entry "${part}" (use name:number, names ${LIMIT_KEYS.join('/')})`);
     out[k] = n;
   }
   return out;
@@ -47,10 +49,12 @@ export function loadConfig(env) {
     perHour = { qwen: 0, gemini: 0, anthropic: 0, ...parseMap(env.LIMIT_HOUR, 'LIMIT_HOUR') }; // 0 = no hourly limit
   } catch (e) { errs.push(e.message); }
   if (upstream === 'anthropic') need('ANTHROPIC_API_KEY');
-  if (upstream === 'gemini') need('GEMINI_API_KEY');
-  if (upstream === 'qwen') { need('QWEN_BASE_URL'); need('QWEN_MODEL'); }
+  if (upstream === 'gemini' || upstream === 'auto') need('GEMINI_API_KEY');
+  if (upstream === 'qwen' || upstream === 'auto') { need('QWEN_BASE_URL'); need('QWEN_MODEL'); }
   const cfg = {
     upstream, passcodes, origins, perDay, perHour, globalDay,
+    autoPrimaryMs: int(env.AUTO_PRIMARY_TIMEOUT_MS, 60_000), autoFallbackMs: int(env.AUTO_FALLBACK_TIMEOUT_MS, 50_000), guestGlobalGeminiDay: int(env.GUEST_GLOBAL_GEMINI_DAY, 60),
+    openAccess: env.OPEN_ACCESS === '1', guestGlobalDay: int(env.GUEST_GLOBAL_DAY, 150), guestIpDay: int(env.GUEST_IP_DAY, 40),
     host: env.HOST || '127.0.0.1', port: int(env.PORT, 8787),
     maxBodyBytes: int(env.MAX_BODY_BYTES, 1_000_000), maxTokens: int(env.MAX_TOKENS, 4096),
     timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, 3),
@@ -60,7 +64,7 @@ export function loadConfig(env) {
     geminiBase: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/+$/, ''),
     qwenBase: (env.QWEN_BASE_URL || '').replace(/\/+$/, ''), qwenModel: env.QWEN_MODEL || '', qwenKey: env.QWEN_API_KEY || '',
   };
-  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
+  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight', 'guestGlobalDay', 'guestIpDay', 'autoPrimaryMs', 'autoFallbackMs', 'guestGlobalGeminiDay']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
   if (errs.length) throw new Error('Configuration problem:\n - ' + errs.join('\n - '));
   return cfg;
 }
@@ -94,16 +98,16 @@ function toOpenAi(system, msgs, cfg) {
       : m.text }))],
   };
 }
-async function callUpstream(cfg, system, msgs, signal) {
+async function callUpstream(cfg, which, system, msgs, signal) {
   let url, headers = { 'content-type': 'application/json' }, body, pick;
-  if (cfg.upstream === 'anthropic') {
+  if (which === 'anthropic') {
     url = `${cfg.anthropicBase}/v1/messages`;
     headers['x-api-key'] = cfg.anthropicKey; headers['anthropic-version'] = '2023-06-01';
     body = { model: cfg.anthropicModel, max_tokens: cfg.maxTokens, system, messages: msgs.map(m => ({ role: m.role, content: m.image
       ? [{ type: 'image', source: { type: 'base64', media_type: m.image.mime, data: m.image.base64 } }, { type: 'text', text: m.text }]
       : m.text })) };
     pick = j => (j.content ?? []).filter(c => c.type === 'text').map(c => c.text).join('');
-  } else if (cfg.upstream === 'gemini') {
+  } else if (which === 'gemini') {
     url = `${cfg.geminiBase}/v1beta/models/${encodeURIComponent(cfg.geminiModel)}:generateContent`;
     headers['x-goog-api-key'] = cfg.geminiKey;
     body = { systemInstruction: { parts: [{ text: system }] },
@@ -162,12 +166,21 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
   const hourly = new Window(), daily = new Window(), global = new Window(), fails = new Window();
   const salt = crypto.randomBytes(8).toString('hex');
   let inFlight = 0;
+  // Is the local AI reachable? Cached, so a sleeping Mac costs one quick check, not a wait on every request.
+  let pState = { up: true, at: 0 };
+  const markPrimary = (up) => { pState = { up, at: Date.now() }; };
+  async function primaryUp() {
+    if (Date.now() - pState.at < (pState.up ? 20_000 : 15_000)) return pState.up;
+    let up = false;
+    try { const r = await fetch(new URL('/gateway/health', cfg.qwenBase), { signal: AbortSignal.timeout(2500) }); up = r.status < 500; await r.arrayBuffer().catch(() => {}); } catch { up = false; }
+    markPrimary(up); return up;
+  }
   const sweeper = setInterval(() => { const n = Date.now(); hourly.sweep(HOUR, n); daily.sweep(DAY, n); global.sweep(DAY, n); fails.sweep(FAIL_SPAN, n); }, 600_000);
   sweeper.unref();
 
   const server = http.createServer(async (req, res) => {
     const t0 = Date.now();
-    let who = '-', ipHash = '-', status = 0, held = false, upNote = '';
+    let who = '-', ipHash = '-', status = 0, held = false, upNote = '', via = '';
     const origin = req.headers.origin;
     const send = (code, obj, extra = {}) => {
       status = code;
@@ -177,7 +190,7 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       res.writeHead(code, h); res.end(body);
     };
     res.on('close', () => { if (held) { inFlight--; held = false; } });
-    res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${(req.url || '').split('?')[0]} who=${who} ip=${ipHash} status=${status}${upNote} ms=${Date.now() - t0}`));
+    res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${(req.url || '').split('?')[0]} who=${who} ip=${ipHash} status=${status}${via ? ' via=' + via : ''}${upNote} ms=${Date.now() - t0}`));
     try {
       const path = (req.url || '').split('?')[0];
       const remote = req.socket.remoteAddress || '';
@@ -190,43 +203,60 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       if (path !== '/v1/ai') return send(404, { error: 'Not found.' });
       if (origin && !cfg.origins.includes(origin)) return send(403, { error: 'This website is not allowed to use the shared AI.' });
       if (req.method === 'OPTIONS') {
-        return send(204, '', { 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type, x-dbb-passcode', 'access-control-max-age': '600' });
+        return send(204, '', { 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type, x-dbb-passcode, x-dbb-guest', 'access-control-max-age': '600' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Use POST.' }, { allow: 'POST, OPTIONS' });
 
-      // passcode (constant time, checks every entry); wrong guesses are throttled per connection
+      // who is calling: a passcode holder (family), or - when OPEN_ACCESS=1 - a guest using the real website
+      const code = String(req.headers['x-dbb-passcode'] || '');
       const nowAuth = Date.now();
-      if (fails.check('i:' + ipHash, FAIL_LIMIT, FAIL_SPAN, nowAuth) > 0) return send(429, { error: 'Too many wrong passcodes from this connection. Please wait a few minutes and try again.' }, { 'retry-after': '600' });
-      const given = crypto.createHash('sha256').update(String(req.headers['x-dbb-passcode'] || '')).digest();
-      let match = null;
-      for (const p of cfg.passcodes) if (crypto.timingSafeEqual(p.hash, given) && !match) match = p;
-      if (!match) { fails.add('i:' + ipHash, nowAuth); return send(401, { error: 'That passcode is not right. Check it and try again.' }); }
-      who = match.name;
+      let guest = false, gid = '';
+      if (code === '') {
+        if (!(cfg.openAccess && origin)) return send(401, { error: 'This needs a passcode. Ask whoever shared the site with you for the link.' });
+        guest = true; who = 'guest';
+        const g = String(req.headers['x-dbb-guest'] || '');
+        gid = /^[A-Za-z0-9_-]{16,64}$/.test(g) ? g : '';   // one random id per browser, so kids in one house each get their own allowance
+      } else {
+        // passcode (constant time, checks every entry); wrong guesses are throttled per connection
+        if (fails.check('i:' + ipHash, FAIL_LIMIT, FAIL_SPAN, nowAuth) > 0) return send(429, { error: 'Too many wrong passcodes from this connection. Please wait a few minutes and try again.' }, { 'retry-after': '600' });
+        const given = crypto.createHash('sha256').update(code).digest();
+        let match = null;
+        for (const p of cfg.passcodes) if (crypto.timingSafeEqual(p.hash, given) && !match) match = p;
+        if (!match) { fails.add('i:' + ipHash, nowAuth); return send(401, { error: 'That passcode is not right. Check it and try again.' }); }
+        who = match.name;
+      }
 
       if (Number(req.headers['content-length'] || 0) > cfg.maxBodyBytes) { req.resume(); return send(413, { error: 'That request is too large (limit about 1 MB, pictures included). Try a smaller picture.' }); }
 
       // limits: checked AND reserved in one synchronous step (no await in between), so concurrent requests cannot overshoot.
       // The reservation is handed back if the request turns out to be invalid or the AI fails (see refund()).
-      const now = Date.now(), u = cfg.upstream;
-      const checks = [
-        [global, 'all', cfg.globalDay[u], DAY, 'Everyone together has used today\'s shared AI allowance'],
-        [daily, 'n:' + who, cfg.perDay[u], DAY, 'You have used your shared AI allowance for today'],
-        [daily, 'i:' + ipHash, cfg.perDay[u], DAY, 'This connection has used its shared AI allowance for today'],
-        [hourly, 'n:' + who, cfg.perHour[u], HOUR, 'You are going a little fast'],
-        [hourly, 'i:' + ipHash, cfg.perHour[u], HOUR, 'This connection is going a little fast'],
+      const now = Date.now(), primary = cfg.upstream === 'auto' ? 'qwen' : cfg.upstream;   // limits follow the AI that normally answers
+      // The checks for one AI. pfx keeps the Gemini backup's counters separate from the main AI's.
+      const buildChecks = (u, pfx) => guest ? [
+        [global, pfx + 'guest-all', pfx ? cfg.guestGlobalGeminiDay : cfg.guestGlobalDay, DAY, 'All of today\'s free builds for everyone are used up'],
+        ...(gid ? [[daily, pfx + 'g:' + gid, cfg.perDay[u], DAY, 'You have used all of your free builds for today']] : []),
+        [daily, pfx + 'i:' + ipHash, gid ? cfg.guestIpDay : cfg.perDay[u], DAY, 'This internet connection has used up its free builds for today'],
+        ...(gid ? [[hourly, pfx + 'g:' + gid, cfg.perHour[u], HOUR, 'You are going a little fast']] : []),
+        [hourly, pfx + 'i:' + ipHash, cfg.perHour[u], HOUR, 'This connection is going a little fast'],
+      ] : [
+        [global, pfx + 'all', cfg.globalDay[u], DAY, 'Everyone together has used today\'s shared AI allowance'],
+        [daily, pfx + 'n:' + who, cfg.perDay[u], DAY, 'You have used your shared AI allowance for today'],
+        [daily, pfx + 'i:' + ipHash, cfg.perDay[u], DAY, 'This connection has used its shared AI allowance for today'],
+        [hourly, pfx + 'n:' + who, cfg.perHour[u], HOUR, 'You are going a little fast'],
+        [hourly, pfx + 'i:' + ipHash, cfg.perHour[u], HOUR, 'This connection is going a little fast'],
       ];
-      for (const [w, key, limit, span, msg] of checks) {
-        const wait = w.check(key, limit, span, now);
-        if (wait > 0) return send(429, { error: `${msg}. Please try again in ${waitText(wait)}.` }, { 'retry-after': String(Math.ceil(wait / 1000)) });
-      }
-      if (inFlight >= cfg.maxInFlight) return send(429, { error: 'The shared AI is busy right now. Please try again in a minute.' }, { 'retry-after': '30' });
-      hourly.add('n:' + who, now); hourly.add('i:' + ipHash, now);
-      daily.add('n:' + who, now); daily.add('i:' + ipHash, now); global.add('all', now);
-      inFlight++; held = true;
-      const refund = () => {
-        hourly.remove('n:' + who, now); hourly.remove('i:' + ipHash, now);
-        daily.remove('n:' + who, now); daily.remove('i:' + ipHash, now); global.remove('all', now);
+      /** Check and reserve in one synchronous step. Returns { ok:true, undo } or { ok:false, msg, wait }. */
+      const reserve = (checks, at) => {
+        for (const [w, key, limit, span, msg] of checks) { const wait = w.check(key, limit, span, at); if (wait > 0) return { ok: false, msg, wait }; }
+        const taken = checks.filter(c => c[2]);
+        for (const [w, key] of taken) w.add(key, at);
+        return { ok: true, undo: () => { for (const [w, key] of taken) w.remove(key, at); } };
       };
+      const first = reserve(buildChecks(primary, ''), now);
+      if (!first.ok) return send(429, { error: `${first.msg}. Please try again in ${waitText(first.wait)}.` }, { 'retry-after': String(Math.ceil(first.wait / 1000)) });
+      if (inFlight >= cfg.maxInFlight) { first.undo(); return send(429, { error: 'The shared AI is busy right now. Please try again in a minute.' }, { 'retry-after': '30' }); }
+      inFlight++; held = true;
+      const refund = first.undo;
 
       // body
       const chunks = []; let size = 0, tooBig = false;
@@ -236,16 +266,35 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       const v = validate(parsed, cfg);
       if (typeof v === 'string') { refund(); return send(400, { error: v }); }
 
-      const ac = new AbortController(); const timer = setTimeout(() => ac.abort(), cfg.timeoutMs);
-      try {
-        const out = await callUpstream(cfg, v.system, v.msgs, ac.signal);
-        if (out.status) { upNote = ` up=${out.status}`; refund(); return send(502, { error: out.status === 429 ? 'The AI behind the shared server is busy or out of quota. Please try again later.' : 'The AI behind the shared server had a problem. Please try again in a moment.' }); }
-        return send(200, { text: out.text });
-      } catch (e) {
-        refund(); upNote = ` up=${ac.signal.aborted ? 'timeout' : 'neterr:' + String(e?.cause?.code || e?.name || 'unknown').slice(0, 30)}`;
-        if (ac.signal.aborted) return send(504, { error: 'The AI took too long to answer. Please try again.' });
-        return send(502, { error: 'The shared server could not reach the AI. Please try again in a moment.' });
-      } finally { clearTimeout(timer); }
+      const callOne = async (which, ms) => {
+        const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
+        try { return await callUpstream(cfg, which, v.system, v.msgs, ac.signal); } finally { clearTimeout(t); }
+      };
+      let out, err, undoFallback = () => {}, used = primary;
+      if (cfg.upstream === 'auto') {
+        // local AI first; Gemini takes over by itself when the local one is off, slow, or failing
+        if (await primaryUp()) { try { out = await callOne('qwen', cfg.autoPrimaryMs); } catch (e) { err = e; } if (err || out.status) markPrimary(false); }
+        if (err || !out || out.status) {
+          upNote = err ? ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr'}` : out ? ` up=${out.status}` : ' up=down';
+          const fb = reserve(buildChecks('gemini', 'G:'), Date.now());
+          if (!fb.ok) { refund(); return send(429, { error: `The main AI is resting right now and today's backup allowance is used up (${fb.msg.charAt(0).toLowerCase() + fb.msg.slice(1)}). Please try again in ${waitText(fb.wait)}.` }, { 'retry-after': String(Math.ceil(fb.wait / 1000)) }); }
+          undoFallback = fb.undo; used = 'gemini'; err = undefined; out = undefined;
+          try { out = await callOne('gemini', cfg.autoFallbackMs); } catch (e) { err = e; }
+          if (!err && !out.status) refund();            // Gemini answered, so the main AI's allowance is not spent
+        }
+      } else { try { out = await callOne(cfg.upstream, cfg.timeoutMs); } catch (e) { err = e; } }
+      if (err || out.status) {
+        refund(); undoFallback();
+        if (err) {
+          upNote = ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr:' + String(err?.cause?.code || err?.name || 'unknown').slice(0, 30)}`;
+          if (err.name === 'AbortError') return send(504, { error: 'The AI took too long to answer. Please try again.' });
+          return send(502, { error: 'The shared server could not reach the AI. Please try again in a moment.' });
+        }
+        upNote = ` up=${out.status}`;
+        return send(502, { error: out.status === 429 ? 'The AI behind the shared server is busy or out of quota. Please try again later.' : 'The AI behind the shared server had a problem. Please try again in a moment.' });
+      }
+      via = used; if (used === primary && cfg.upstream === 'auto') markPrimary(true);
+      return send(200, { text: out.text });
     } catch {
       if (!res.headersSent) send(500, { error: 'Something went wrong on the shared server.' });
     }
@@ -258,5 +307,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let cfg;
   try { cfg = loadConfig(process.env); } catch (e) { console.error(e.message); process.exit(1); }
   createProxy(cfg).listen(cfg.port, cfg.host, () =>
-    console.log(`dbb-proxy listening on ${cfg.host}:${cfg.port} upstream=${cfg.upstream} origins=${cfg.origins.join(',')} perDay=${cfg.perDay[cfg.upstream]} globalDay=${cfg.globalDay[cfg.upstream]}`));
+    console.log(`dbb-proxy listening on ${cfg.host}:${cfg.port} upstream=${cfg.upstream} openAccess=${cfg.openAccess} origins=${cfg.origins.join(',')} perDay=${cfg.perDay[cfg.upstream === 'auto' ? 'qwen' : cfg.upstream]} globalDay=${cfg.globalDay[cfg.upstream === 'auto' ? 'qwen' : cfg.upstream]}`));
 }

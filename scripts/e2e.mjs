@@ -224,7 +224,7 @@ async function mockAnthropic(page, replies, seen) {
   await p.context().close();
 }
 { // C6 no key -> settings dialog
-  const p = await fresh(null);
+  const p = await fresh({ provider: 'anthropic', anthropicKey: '' });
   await p.fill('#prompt', 'a cat'); await p.click('#go'); await p.waitForTimeout(400);
   check('ai/nokey: opens settings and points to ready-made builds', await p.locator('#settings[open]').count() === 1 && /ready-made/.test(await p.locator('#ai-note').innerText()));
   await shot(p, '19-no-key');
@@ -242,9 +242,20 @@ async function mockProxy(page, replies, seen) {
     route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ text: '```json\n' + JSON.stringify(r) + '\n```' }) });
   });
 }
+{ // C6a a brand-new visitor (a kid with the link): types, clicks Generate, it works. No passcode, no key, no settings.
+  const seen = []; const p = await fresh(null); await mockProxy(p, [BOAT], seen);
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  check('guest: a new visitor can generate with no setup at all', seen.length === 1 && (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
+  check('guest: the request has a per-browser id and NO passcode', /^[A-Za-z0-9_-]{16,64}$/.test(seen[0]?.headers['x-dbb-guest'] || '') && seen[0].headers['x-dbb-passcode'] === undefined, JSON.stringify(seen[0]?.headers['x-dbb-guest']));
+  check('guest: no settings dialog was needed', await p.locator('#settings[open]').count() === 0);
+  const id1 = seen[0].headers['x-dbb-guest'];
+  await p.click('#go'); await idle(p);
+  check('guest: the same browser keeps the same id', seen.length === 2 && seen[1].headers['x-dbb-guest'] === id1);
+  await p.context().close();
+}
 { // C6b shared server: first-time default, passcode flow, friendly limit message, no passcode in profile file
   const seen = []; const p = await fresh(null);
-  check('shared: first-time visitors start on "Shared server"', await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{"provider":"shared"}').provider) === 'shared' && /passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
+  check('shared: first-time visitors start on "Shared server", ready to go, no passcode asked', await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{"provider":"shared"}').provider) === 'shared' && /AI: shared server/.test(await p.locator('#ai-note').innerText()) && !/passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
   await mockProxy(p, [BOAT], seen);
   await p.click('#btn-settings');
   check('shared: only the passcode is shown (no key/model fields)', await p.locator('#sharedPasscode').isVisible() && !(await p.locator('#anthropicKey').isVisible()) && !(await p.locator('#geminiKey').isVisible()));

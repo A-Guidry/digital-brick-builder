@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Usage (on the VPS, as root): switch-upstream.sh qwen|gemini|anthropic
+# Usage (on the VPS, as root): switch-upstream.sh auto|qwen|gemini|anthropic   (auto = local AI first, Gemini as automatic backup)
 # Sets UPSTREAM in /etc/dbb-proxy/env, restarts the proxy, and checks it came back healthy.
 set -euo pipefail
-u="${1:-}"; case "$u" in qwen|gemini|anthropic) ;; *) echo "usage: $0 qwen|gemini|anthropic" >&2; exit 2;; esac
+u="${1:-}"; case "$u" in auto|qwen|gemini|anthropic) ;; *) echo "usage: $0 auto|qwen|gemini|anthropic" >&2; exit 2;; esac
 f=/etc/dbb-proxy/env
 sed -i "s/^UPSTREAM=.*/UPSTREAM=$u/" "$f"
 systemctl restart dbb-proxy

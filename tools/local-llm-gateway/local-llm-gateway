@@ -12,6 +12,7 @@ LOG="$HOME/Library/Logs/local-llm-gateway.log"
 PORT="${GATEWAY_PORT:-11436}"; HTTPS_PORT="${GATEWAY_HTTPS_PORT:-8443}"
 UPSTREAM="${GATEWAY_UPSTREAM:-http://127.0.0.1:11435}"
 ORIGINS="${GATEWAY_ORIGINS:-https://brickbuilder.arcwel.ai}"
+WARM="${GATEWAY_WARM_MODEL-qwen3.5:9b}"        # model to keep loaded; GATEWAY_WARM_MODEL= (empty) turns it off
 NODE="$(command -v node || true)"
 SOCK="$HOME/.config/tailscale/tailscaled.sock"
 ts() { if [ -S "$SOCK" ]; then tailscale --socket="$SOCK" "$@"; else tailscale "$@"; fi; }
@@ -30,7 +31,7 @@ case "$cmd" in
     [ -f "$HERE/gateway.mjs" ] || { echo "gateway.mjs not found next to this script" >&2; exit 1; }
     run mkdir -p "$DEST" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
     run cp "$HERE/gateway.mjs" "$DEST/gateway.mjs"
-    if [ "$DRY" = 1 ]; then echo "[dry-run] write $PLIST (node=$NODE port=$PORT upstream=$UPSTREAM origins=$ORIGINS)"; else
+    if [ "$DRY" = 1 ]; then echo "[dry-run] write $PLIST (node=$NODE port=$PORT upstream=$UPSTREAM origins=$ORIGINS warm=${WARM:-off})"; else
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -40,6 +41,7 @@ cat > "$PLIST" <<PL
   <key>EnvironmentVariables</key><dict>
     <key>PORT</key><string>$PORT</string><key>HOST</key><string>127.0.0.1</string>
     <key>UPSTREAM</key><string>$UPSTREAM</string><key>ALLOWED_ORIGINS</key><string>$ORIGINS</string>
+    <key>WARM_MODEL</key><string>$WARM</string>
   </dict>
   <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG</string><key>StandardErrorPath</key><string>$LOG</string>

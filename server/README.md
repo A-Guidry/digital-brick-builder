@@ -2,7 +2,7 @@
 
 A small Node 20+ program with no dependencies. The site sends it one request type; it checks a passcode, applies limits, and forwards to ONE AI chosen by the server. Credentials never reach the browser.
 
-- `POST /v1/ai` with header `x-dbb-passcode`. Body `{ system, messages:[{role,text,image?:{mime,base64}}] }`. Reply `{ text }` or `{ error }`.
+- `POST /v1/ai` with header `x-dbb-passcode` (family), or with no passcode and `x-dbb-guest` (a random id per browser) when `OPEN_ACCESS=1` (kids and friends). Body `{ system, messages:[{role,text,image?:{mime,base64}}] }`. Reply `{ text }` or `{ error }`.
 - `GET /healthz` returns `ok` (no upstream call).
 - Statuses: 401 wrong passcode, 403 wrong website, 413 too big, 429 limit (with `Retry-After`), 502 AI trouble, 504 timeout.
 
@@ -17,6 +17,12 @@ A small Node 20+ program with no dependencies. The site sends it one request typ
 
 ## Where it lives (production)
 Program `/opt/dbb-proxy/`, settings `/etc/dbb-proxy/env` (mode 600), service `dbb-proxy`, listening on `127.0.0.1:8787` only. nginx terminates https.
+
+## Who gets in, and how much
+- **`UPSTREAM=auto` (recommended):** requests go to your Mac's local AI first. If the Mac is asleep or off, or the model is slow or failing, Gemini answers instead, automatically. Logs show `via=qwen` or `via=gemini`.
+- **Guests (`OPEN_ACCESS=1`):** anyone using the real website, no passcode. Each browser gets `LIMIT_DAY` builds a day, each internet connection `GUEST_IP_DAY`, and all guests together `GUEST_GLOBAL_DAY` (local AI) and `GUEST_GLOBAL_GEMINI_DAY` (Gemini backup). Gemini backup builds also count against the Gemini allowance in `LIMIT_DAY` (default 10 per person).
+- **Family passcode:** lifts the limits to the family numbers. Script requests with no browser origin are refused.
+- The caps exist so one person cannot use up the day's quota for everyone (Google's free tier has its own daily limit that applies to all users combined).
 
 ## Everyday operations (run on the VPS as root)
 - **Logs** (one safe line per request: time, passcode name, hashed IP, status, ms; never prompts, passcodes or keys): `journalctl -u dbb-proxy -f`

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { loadConfig, createGateway, originAllowed } from './gateway.mjs';
+import { loadConfig, createGateway, originAllowed, startWarmer } from './gateway.mjs';
 
 const SITE = 'https://brickbuilder.arcwel.ai';
 /** Fake Ollama: 403s any request that carries an Origin it does not know (like the real one), streams chat, records what it saw. */
@@ -86,3 +86,23 @@ test('request bodies pass through unchanged (including large image-sized ones)',
   assert.equal((await r.json()).echo.length, big.length);
   await g.close();
 });
+
+test('keep-warm: loads the model at once and re-asks on a timer with a long keep_alive', async () => {
+  const o = await fakeOllama(); const logs = [];
+  const cfg = loadConfig({ UPSTREAM: `http://127.0.0.1:${o.port}`, WARM_MODEL: 'qwen-test', WARM_EVERY_MS: '1000', WARM_KEEP_ALIVE: '45m' });
+  const stop = startWarmer(cfg, { log: l => logs.push(l) });
+  await new Promise(r => setTimeout(r, 1300)); stop();
+  const gens = o.seen.filter(x => x.url === '/api/generate');
+  assert.ok(gens.length >= 2, `expected at least 2 pings, saw ${gens.length}`);
+  const b = JSON.parse(gens[0].body); assert.equal(b.model, 'qwen-test'); assert.equal(b.keep_alive, '45m'); assert.equal(b.prompt, '');
+  assert.match(logs[0], /loaded and kept in memory/); assert.equal(logs.length, 1, 'only state changes are logged');
+  await o.close();
+});
+test('keep-warm: does nothing unless WARM_MODEL is set, and survives a dead Ollama', async () => {
+  assert.equal(typeof startWarmer(loadConfig({}))(), 'undefined');
+  const logs = [];
+  const stop = startWarmer(loadConfig({ UPSTREAM: 'http://127.0.0.1:1', WARM_MODEL: 'm', WARM_EVERY_MS: '1000' }), { log: l => logs.push(l) });
+  await new Promise(r => setTimeout(r, 300)); stop();
+  assert.match(logs[0], /Ollama not answering/);
+});
+test('invalid WARM_EVERY_MS is refused at startup', () => { assert.throws(() => loadConfig({ WARM_EVERY_MS: '5' }), /at least 1000/); });

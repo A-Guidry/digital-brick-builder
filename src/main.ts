@@ -444,7 +444,6 @@ function setImage(i: typeof image) {
 }
 function setNote(t: string, err = false) { const n = $('#ai-note'); n.textContent = t; n.className = 'note' + (err ? ' err' : ''); }
 function refreshNote() {
-  if (settings.provider === 'shared' && !isConfigured(settings)) { setNote('Shared AI needs the passcode you were given. Open AI settings and enter it, or try a ready-made build below.'); return; }
   setNote(isConfigured(settings) ? (settings.provider === 'shared' ? 'AI: shared server' : `AI: ${settings.provider === 'anthropic' ? 'Anthropic' : settings.provider === 'gemini' ? 'Gemini' : 'local model'} · ${settings.provider === 'anthropic' ? settings.anthropicModel : settings.provider === 'gemini' ? settings.geminiModel : settings.localModel}`) : 'No AI set up. Use AI settings to paste a key or point at a local model — or open a ready-made build below.');
 }
 

@@ -25,3 +25,13 @@ Settings (environment variables when installing): `GATEWAY_UPSTREAM` (default `h
 Use it from an app: base URL `https://agt-studio-llm.tail46b2ff.ts.net:8443/v1` (OpenAI-compatible), any API key, model e.g. `qwen3.5:9b`. In Digital Brick Builder: AI settings, Local model, paste that URL.
 
 Chrome asks once to allow the website to reach "local network" devices: choose Allow.
+
+## Keep-warm, and if the model gets stuck
+The gateway keeps one model loaded (`GATEWAY_WARM_MODEL`, default `qwen3.5:9b`; empty turns it off) by re-asking Ollama every 4 minutes with a 30-minute keep-alive, so the first request after a quiet spell is fast (about 0.1 s instead of 30 to 60 s). It costs about 7 GB of memory while the Mac is on.
+
+Ollama can occasionally wedge while unloading a model: `ollama ps` shows **Stopping…** for minutes and even tiny requests take a minute or more. The fix is to end only the model runner (Ollama starts a fresh one):
+```
+OLLAMA_HOST=127.0.0.1:11435 ollama ps                      # look for "Stopping…"
+pkill -TERM -f "Ollama.app/Contents/Resources/llama-server"   # then the next request reloads it in ~20 s
+```
+Do not restart `ollama serve` itself: the PAIR app launches it on port 11435 behind its own proxy on 11434.
