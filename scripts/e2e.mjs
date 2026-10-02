@@ -434,6 +434,24 @@ async function mockProxy(page, replies, seen) {
   check('bricklink: upload panel with copy-and-open button', await p.locator('#p-bl').count() === 1 && /Wanted List/.test(await p.locator('.bl-card').innerText()));
   await p.context().close();
 }
+{ // C8 empty Gemini key: Test connection says what is missing and sends nothing to Google
+  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: '', geminiModel: 'gemini-3.5-flash-lite' });
+  await p.route('https://generativelanguage.googleapis.com/**', r => { seen.push(r.request().url()); r.fulfill({ status: 403, headers: cors, contentType: 'application/json', body: '{"error":{"message":"Method doesn\'t allow unregistered callers"}}' }); });
+  await p.click('#btn-settings'); await p.click('#test');
+  await p.waitForFunction(() => { const t = document.querySelector('#test-out').textContent; return t && t !== 'Testing…'; });
+  check('settings: Test with an empty Gemini key says to paste a key', /No Gemini key entered yet.*AIza/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
+  check('settings: ...and sends nothing to Google', seen.length === 0, String(seen.length));
+  await p.context().close();
+}
+{ // C9 local model picker: finds what is installed and replaces a model that is not
+  const p = await fresh({ provider: 'local', localUrl: 'http://models.test/v1', localModel: 'llama3.2-vision' });
+  await p.route('http://models.test/**', route => route.request().method() === 'OPTIONS' ? route.fulfill({ status: 204, headers: cors }) : route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ data: [{ id: 'qwen3.5:9b' }, { id: 'nomic-embed-text:latest' }] }) }));
+  await p.click('#btn-settings');
+  await p.waitForFunction(() => /not installed/.test(document.querySelector('#models-out').textContent), null, { timeout: 15000 });
+  const r = await p.evaluate(() => ({ box: document.querySelector('#localModel').value, opts: document.querySelectorAll('#localModelList option').length, saved: JSON.parse(localStorage.getItem('brickforge.settings.v1')).localModel, out: document.querySelector('#models-out').textContent }));
+  check('local: opening settings finds installed models and swaps a missing model for an installed one', r.box === 'qwen3.5:9b' && r.saved === 'qwen3.5:9b' && r.opts === 2 && /llama3\.2-vision.*not installed/.test(r.out), JSON.stringify(r));
+  await p.context().close();
+}
 { // B2. build mode: panels step aside, icon rails, touch rules, drawer
   const p = await fresh(null, { width: 1440, height: 860 });
   check('touch: double-tap zoom is off (touch-action: manipulation on the page)', await p.evaluate(() => getComputedStyle(document.documentElement).touchAction === 'manipulation' && getComputedStyle(document.body).touchAction === 'manipulation'));

@@ -28,15 +28,57 @@ export function isConfigured(s: Settings): boolean {
   return s.provider === 'anthropic' ? !!s.anthropicKey.trim() : s.provider === 'gemini' ? !!s.geminiKey.trim() : !!s.localUrl.trim() && !!s.localModel.trim();
 }
 
-async function readError(r: Response): Promise<string> {
-  let body = ''; try { body = (await r.text()).slice(0, 300); } catch { /* ignore */ }
-  if (r.status === 401 || r.status === 403) return `The provider rejected the key (${r.status}). Check it and try again. ${body}`;
-  if (r.status === 404) return `Model or endpoint not found (404). Check the model name. ${body}`;
-  if (r.status === 429) return `Rate limited or out of quota (429). ${body}`;
-  return `Provider error ${r.status}. ${body}`;
+type Who = 'anthropic' | 'gemini' | 'local';
+/** Says what is missing BEFORE any request is made, so an empty box never turns into a confusing error from the provider. */
+export function missingSetting(s: Settings): string {
+  if (s.provider === 'shared') return s.sharedPasscode.trim() ? '' : 'Enter the passcode you were given in the box above, then try again.';
+  if (s.provider === 'anthropic') return s.anthropicKey.trim() ? '' : 'No Anthropic key entered yet. Paste your key (it starts with "sk-ant-") in the box above, then try again.';
+  if (s.provider === 'gemini') return s.geminiKey.trim() ? '' : 'No Gemini key entered yet. Paste your key (it starts with "AIza"; you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
+  if (!s.localUrl.trim()) return 'Enter the address of your local model server (for Ollama: http://localhost:11434/v1).';
+  return s.localModel.trim() ? '' : 'Enter a model name, or press "Find installed models".';
 }
-const netHint = (e: unknown, what: string) => new Error(`Could not reach ${what}: ${(e as Error).message}. ` +
-  (what.includes('local') ? 'Is the server running, and does it allow browser requests (CORS)? For Ollama set OLLAMA_ORIGINS="*".' : 'Check your network connection.'));
+
+/** Turns a provider's error into something a person can act on. Keeps the provider's own words at the end for support. */
+async function readError(r: Response, who: Who, model = ''): Promise<string> {
+  let raw = ''; try { raw = await r.text(); } catch { /* ignore */ }
+  let msg = raw; try { const j = JSON.parse(raw); msg = String(j.error?.message ?? (typeof j.error === 'string' ? j.error : '') ?? j.message ?? raw); } catch { /* not JSON */ }
+  msg = msg.replace(/\s+/g, ' ').trim().slice(0, 220);
+  const st = r.status, tail = msg ? ` (${msg})` : '';
+  if (who === 'gemini') {
+    if (/unregistered callers|without established identity/i.test(msg)) return `Google received no API key. Paste your key (it starts with "AIza") into the Gemini box and try again.${tail}`;
+    if (st === 400 && /API key not valid|API_KEY_INVALID/i.test(msg)) return `Google says that API key is not valid. Copy it again from aistudio.google.com/apikey and paste it with no spaces.${tail}`;
+    if (st === 403) return `Google refused this key from this website (403). If you limited the key to certain websites or apps in Google AI Studio or Cloud, allow brickbuilder.arcwel.ai or make a new unrestricted key.${tail}`;
+    if (st === 404) return `Google does not offer the model "${model}" to your key (404). Try gemini-3.5-flash-lite in the Model box.${tail}`;
+    if (st === 429) return `Google says you have reached its free-tier or rate limit (429). Wait a minute and try again.${tail}`;
+    if (st >= 500) return `Google's model is overloaded right now (${st}). Try again in a moment, or set the Model box to gemini-3.5-flash-lite.${tail}`;
+  }
+  if (who === 'local') {
+    if (st === 403) return 'Your local model server refused this website (403). Some servers, including the PAIR app on port 11434, only accept pages opened from localhost. Open this app at http://localhost (run npm run dev), or for plain Ollama set OLLAMA_ORIGINS="https://brickbuilder.arcwel.ai" and restart it.' + tail;
+    if (st === 404 || /model|node advertises/i.test(msg)) return `Your server does not have the model "${model}". Press "Find installed models" to pick one that is installed.${tail}`;
+  }
+  if (st === 401 || st === 403) return `The provider rejected the key (${st}). Check it and try again.${tail}`;
+  if (st === 404) return `Model or endpoint not found (404). Check the model name.${tail}`;
+  if (st === 429) return `Rate limited or out of quota (429).${tail}`;
+  return `Provider error ${st}.${tail}`;
+}
+const netHint = (e: unknown, what: string) => {
+  const local = what.includes('local');
+  const https = typeof location !== 'undefined' && location.protocol === 'https:';
+  return new Error(`Could not reach ${what}: ${(e as Error).message}. ` + (local
+    ? (https ? 'Chrome blocks a website from reaching your own computer unless you allow it: click the lock icon next to the address, allow "Local network access", and reload. Also check the server is running and accepts this website (Ollama: OLLAMA_ORIGINS).' : 'Is the server running, and does it allow browser requests (CORS)? For Ollama set OLLAMA_ORIGINS="*".')
+    : 'Check your network connection.'));
+};
+
+/** Models the local server says it has (OpenAI-compatible GET /models). */
+export async function listLocalModels(s: Settings): Promise<string[]> {
+  const base = s.localUrl.trim().replace(/\/+$/, '');
+  if (!base) throw new Error('Enter the address of your local model server first.');
+  let r: Response;
+  try { r = await fetch(`${base}/models`); } catch (e) { throw netHint(e, 'the local model server'); }
+  if (!r.ok) throw new Error(await readError(r, 'local'));
+  const j = await r.json();
+  return (j.data ?? j.models ?? []).map((m: any) => String(m.id ?? m.name ?? '')).filter(Boolean);
+}
 
 /** Shared server: the proxy holds the AI credentials; we send only the passcode. Its error text is already plain language. */
 async function completeShared(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
@@ -57,6 +99,7 @@ async function completeShared(s: Settings, system: string, msgs: Msg[], signal?:
 }
 
 export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
+  const missing = missingSetting(s); if (missing) throw new Error(missing);
   if (s.provider === 'shared') return completeShared(s, system, msgs, signal);
   if (s.provider === 'anthropic') {
     let r: Response;
@@ -72,7 +115,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
         }),
       });
     } catch (e) { throw netHint(e, 'Anthropic'); }
-    if (!r.ok) throw new Error(await readError(r));
+    if (!r.ok) throw new Error(await readError(r, 'anthropic', s.anthropicModel));
     const j = await r.json();
     return (j.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('');
   }
@@ -90,7 +133,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
         }),
       });
     } catch (e) { throw netHint(e, 'Gemini'); }
-    if (!r.ok) throw new Error(await readError(r));
+    if (!r.ok) throw new Error(await readError(r, 'gemini', s.geminiModel));
     const j = await r.json();
     return (j.candidates?.[0]?.content?.parts ?? []).map((p: any) => p.text ?? '').join('');
   }
@@ -108,12 +151,13 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
       }),
     });
   } catch (e) { throw netHint(e, 'the local model server'); }
-  if (!r.ok) throw new Error(await readError(r));
+  if (!r.ok) throw new Error(await readError(r, 'local', s.localModel));
   const j = await r.json();
   return j.choices?.[0]?.message?.content ?? '';
 }
 
 export async function testConnection(s: Settings): Promise<string> {
+  const missing = missingSetting(s); if (missing) throw new Error(missing);
   if (s.provider === 'shared') {
     try { const h = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/healthz`); if (!h.ok) throw new Error(`status ${h.status}`); }
     catch (e) { throw netHint(e, 'the shared server'); }

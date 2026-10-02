@@ -11,7 +11,7 @@ import { makeBags, Bag } from './bags';
 import type { LooseSpec } from './pile';
 import { partsList, wantedListXml, csv } from './bricklink';
 import { PART_BY_ID, COLOR_BY_ID } from './catalog';
-import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, Settings, ProviderId } from './llm';
+import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, Settings, ProviderId } from './llm';
 import { systemPrompt, userPrompt, Msg } from './prompt';
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -483,8 +483,22 @@ function syncSettingsUi() {
 function readSettingsUi() {
   for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) settings[k] = ($(`#${k}`) as HTMLInputElement).value.trim();
 }
-$('#btn-settings').onclick = () => { syncSettingsUi(); dlg.showModal(); };
-document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.onclick = () => { readSettingsUi(); settings.provider = b.dataset.p as ProviderId; saveSettings(settings); syncSettingsUi(); refreshNote(); });
+/** Ask the local server which models it really has, fill the model box's suggestions, and fix a model name that is not installed. */
+async function findModels() {
+  const out = $('#models-out'); out.textContent = 'Looking…';
+  try {
+    const ids = await listLocalModels(settings);
+    $('#localModelList').innerHTML = ids.map(id => `<option value="${esc(id)}"></option>`).join('');
+    if (!ids.length) { out.textContent = 'The server answered, but it has no models installed.'; return; }
+    if (ids.includes(settings.localModel)) { out.textContent = `Installed: ${ids.join(', ')}`; return; }
+    const was = settings.localModel;
+    settings.localModel = ids[0]; ($('#localModel') as HTMLInputElement).value = ids[0]; saveSettings(settings); refreshNote();
+    out.textContent = `"${was}" is not installed, so I picked "${ids[0]}". Installed: ${ids.join(', ')}`;
+  } catch (e) { out.textContent = (e as Error).message; }
+}
+$('#find-models').onclick = () => { readSettingsUi(); void findModels(); };
+$('#btn-settings').onclick = () => { syncSettingsUi(); dlg.showModal(); if (settings.provider === 'local') void findModels(); };
+document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.onclick = () => { readSettingsUi(); settings.provider = b.dataset.p as ProviderId; saveSettings(settings); syncSettingsUi(); refreshNote(); if (settings.provider === 'local') void findModels(); });
 const persist = () => { readSettingsUi(); saveSettings(settings); refreshNote(); };
 dlg.addEventListener('close', persist);
 $('#save-close').onclick = () => { persist(); dlg.close(); };

@@ -106,22 +106,23 @@
       <button type="button" data-p="shared">Shared server</button><button type="button" data-p="anthropic">Anthropic</button><button type="button" data-p="gemini">Gemini</button><button type="button" data-p="local">Local model</button>
     </div>
     <div data-for="shared">
-      <label>Passcode<input id="sharedPasscode" type="password" autocomplete="off" placeholder="The passcode you were given"></label>
+      <label>Passcode<input id="sharedPasscode" type="password" name="sharedPasscode-secret" autocomplete="new-password" spellcheck="false" autocapitalize="off" placeholder="The passcode you were given"></label>
       <p class="note">Uses the site owner's AI, so you do not need your own key. There is a daily limit per person. The passcode stays in this browser and is never put in profile files or share links.</p>
       <details><summary class="note">Advanced</summary><label>Server address<input id="sharedUrl"></label></details>
     </div>
     <div data-for="anthropic">
-      <label>Anthropic API key<input id="anthropicKey" type="password" autocomplete="off" placeholder="sk-ant-…"></label>
+      <label>Anthropic API key<input id="anthropicKey" type="password" name="anthropicKey-secret" autocomplete="new-password" spellcheck="false" autocapitalize="off" placeholder="sk-ant-…"></label>
       <label>Model<input id="anthropicModel"></label>
     </div>
     <div data-for="gemini">
-      <label>Gemini API key<input id="geminiKey" type="password" autocomplete="off" placeholder="AIza…"></label>
+      <label>Gemini API key<input id="geminiKey" type="password" name="geminiKey-secret" autocomplete="new-password" spellcheck="false" autocapitalize="off" placeholder="AIza…"></label>
       <label>Model<input id="geminiModel"></label>
     </div>
     <div data-for="local">
       <label>OpenAI-compatible base URL (Ollama, LM Studio…)<input id="localUrl"></label>
-      <label>Model name<input id="localModel"></label>
-      <p class="note">Pictures need a vision-capable local model. Ollama needs OLLAMA_ORIGINS="*" to accept browser requests.</p>
+      <label>Model name<input id="localModel" list="localModelList" autocomplete="off" spellcheck="false"></label><datalist id="localModelList"></datalist>
+      <div class="row"><button type="button" id="find-models">Find installed models</button><span id="models-out" class="note"></span></div>
+      <p class="note">Pictures need a vision-capable local model. This is a website, so your browser must allow it to reach your computer, and the server must accept it (Ollama: OLLAMA_ORIGINS). Opening the app at http://localhost always works.</p>
     </div>
     <div class="row"><button type="button" id="test">Test connection</button><span id="test-out" class="note"></span></div>
     <div class="row end"><button type="button" id="clear-keys">Clear saved keys</button><button type="button" id="save-close" class="primary">Save &amp; close</button></div>
