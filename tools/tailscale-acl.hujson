@@ -5,6 +5,7 @@
 // What this does
 //   Today every device can reach every port on every other device. This limits the Mac's ports to what is actually used:
 //     VPS    -> Mac : 11436 (local-LLM gateway, plain) and 8443 (gateway, HTTPS)         [shared-AI proxy uses these]
+//                     8787 (HazzMate API)  [hazzmate.arcwel.ai on the VPS forwards to the Mac here: it MUST stay open]
 //     iPhone -> Mac : 8787 (HazzMate API), 8443 (gateway HTTPS), 443 and 80 (older web entry)
 //     Mac    -> everything (so your own machine can reach the VPS and the phone)
 //   Ports such as 11434 (PAIR proxy) and 11435 (real Ollama) become unreachable from the VPS and the phone.
@@ -21,13 +22,13 @@
   },
 
   "acls": [
-    { "action": "accept", "src": ["vps"],   "dst": ["mac:11436,8443"] },
+    { "action": "accept", "src": ["vps"],   "dst": ["mac:11436,8443,8787"] },
     { "action": "accept", "src": ["phone"], "dst": ["mac:8787,8443,443,80"] },
     { "action": "accept", "src": ["mac"],   "dst": ["*:*"] },
   ],
 
   "tests": [
-    { "src": "vps",   "accept": ["mac:11436", "mac:8443"], "deny": ["mac:11434", "mac:11435", "mac:8787"] },
+    { "src": "vps",   "accept": ["mac:11436", "mac:8443", "mac:8787"], "deny": ["mac:11434", "mac:11435"] },
     { "src": "phone", "accept": ["mac:8787", "mac:8443"],  "deny": ["mac:11434", "mac:11435", "mac:11436"] },
     { "src": "mac",   "accept": ["vps:22", "phone:8080"] },
   ],
