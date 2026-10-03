@@ -1,4 +1,5 @@
 import { COLORS, resolveColor, PLATES_PER_STUD } from './catalog';
+import { Feature, validateFeatures, cleanFeatures, expandFeatures } from './features';
 
 export type Vec3 = [number, number, number];
 export interface Shape {
@@ -16,6 +17,7 @@ export interface ShapeSpec {
   name: string;
   mirror_x?: boolean;         // mirror every shape across x = 0
   shapes: Shape[];
+  features?: Feature[];       // named parts (wheel, window, eye ...) built by features.ts; expanded into shapes by expand()
 }
 export const LIMITS = { maxShapes: 80, maxStuds: 40, maxHeightStuds: 30 };
 
@@ -45,6 +47,7 @@ export function parseSpec(input: unknown): { ok: true; spec: ShapeSpec } | { ok:
   scanForbidden(raw, 'spec', errors);
   if (!Array.isArray(raw.shapes) || raw.shapes.length === 0) errors.push('spec.shapes must be a non-empty array');
   else if (raw.shapes.length > LIMITS.maxShapes) errors.push(`too many shapes (max ${LIMITS.maxShapes})`);
+  errors.push(...validateFeatures(raw.features));
   const shapes: Shape[] = [];
   (raw.shapes ?? []).forEach((s: any, i: number) => {
     const p = `shapes[${i}]`;
@@ -68,6 +71,8 @@ export function parseSpec(input: unknown): { ok: true; spec: ShapeSpec } | { ok:
   });
   if (errors.length) return { ok: false, errors };
   const spec: ShapeSpec = { name: String(raw.name ?? 'Model').slice(0, 60), mirror_x: !!raw.mirror_x, shapes };
+  const feats = cleanFeatures(raw.features);
+  if (feats.length) spec.features = feats;
   const b = specBounds(spec);
   if (!b) return { ok: false, errors: ['spec has no "add" shapes'] };
   const dx = b.max[0] - b.min[0], dy = b.max[1] - b.min[1], dz = b.max[2] - b.min[2];
@@ -86,9 +91,10 @@ export function extractJson(text: string): string {
 
 /** Expand mirror_x into explicit shapes. */
 export function expand(spec: ShapeSpec): Shape[] {
-  if (!spec.mirror_x) return spec.shapes;
+  const all = spec.features?.length ? [...spec.shapes, ...expandFeatures(spec.features)] : spec.shapes;
+  if (!spec.mirror_x) return all;
   const out: Shape[] = [];
-  for (const s of spec.shapes) {
+  for (const s of all) {
     out.push(s);
     const m: Shape = { ...s, center: [-s.center[0], s.center[1], s.center[2]] };
     if (s.type === 'wedge' && s.slope) m.slope = s.slope === '+x' ? '-x' : s.slope === '-x' ? '+x' : s.slope;

@@ -321,6 +321,28 @@ const jpegOk = b64 => typeof b64 === 'string' && Buffer.from(b64, 'base64').suba
   check('detail: Detailed asks for many small details, Simple does not', /ADD DETAIL/.test(sysHigh) && !/ADD DETAIL/.test(sysNormal), `${sysHigh.length} vs ${sysNormal.length}`);
   await p.context().close();
 }
+{ // parts catalog end to end: the AI names parts, the app builds them
+  const CAR = { name: 'Parts car', plan: ['body', 'wheels', 'glass'], mirror_x: true,
+    shapes: [{ type: 'box', color: 'red', center: [0, 2.4, 0], size: [8, 2.4, 14] }, { type: 'box', color: 'red', center: [0, 4.8, -1], size: [7, 2.4, 7] }],
+    features: [{ kind: 'wheel', at: [4.2, 2, 4], facing: '+x', size: 4 }, { kind: 'wheel', at: [4.2, 2, -4], facing: '+x', size: 4 }, { kind: 'windshield', at: [0, 4.8, 2.5], size: [5, 1.6] }] };
+  const seen = []; const p = await fresh({}); await mockProxy(p, [CAR], seen);
+  await p.fill('#prompt', 'a red car'); await p.click('#go'); await idle(p);
+  const colours = await p.evaluate(() => { const m = window.__bf.model; return [...new Set(m.parts.map(x => x.color))]; });
+  check('parts: the system prompt offers the catalog', /PARTS CATALOG/.test(seen[0]?.body.system || '') && /- wheel:/.test(seen[0]?.body.system || ''));
+  check('parts: a car described with wheel and windshield parts builds with black tyres and glass', colours.includes('black') && colours.includes('medium_azure') && (await p.locator('#banner').isHidden()), colours.join(','));
+  check('parts: the saved spec keeps the parts list', (await p.evaluate(() => window.__bf.spec?.features?.length)) === 3);
+  check('parts: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await p.context().close();
+}
+{ // a bad part from the AI is sent back as a plain-English problem, then fixed
+  const BADCAR = { name: 'Bad', shapes: [{ type: 'box', color: 'red', center: [0, 2, 0], size: [6, 4, 10] }], features: [{ kind: 'jetpack', at: [0, 1, 0] }, { kind: 'wheel', at: [1, 2], facing: 'up' }] };
+  const seen = []; const p = await fresh({}); await mockProxy(p, [BADCAR, BOAT], seen);
+  await p.fill('#prompt', 'thing'); await p.click('#go'); await idle(p);
+  const second = JSON.stringify(seen[1]?.body.messages || '');
+  check('parts: bad parts are reported back to the AI by name', seen.length === 2 && /jetpack/.test(second) && /wheel/.test(second), String(seen.length));
+  check('parts: the corrected model is accepted', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
+  await p.context().close();
+}
 { // C6e a picture the browser cannot read (corrupt, or a type it cannot decode): a clear message, no crash, still usable
   const p = await fresh(null);
   await p.setInputFiles('#file', { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('this is not really a picture') });

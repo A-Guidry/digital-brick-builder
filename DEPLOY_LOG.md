@@ -67,3 +67,10 @@ Findings that are NOT fixed (decisions for the owner):
 - App: prompt v2 (plan first), vision look-and-fix check (`src/critic.ts`), Simple/Detailed switch (`settings.detail`), reply budget 4096 to 8192.
 - VPS `/etc/dbb-proxy/env` (backup `/root/env.pre-detail.bak`): MAX_TOKENS=8192, LIMIT_DAY gemini 10 to 30, LIMIT_GLOBAL_DAY gemini 30 to 240, GUEST_IP_DAY 80, GUEST_GLOBAL_DAY 400, GUEST_GLOBAL_GEMINI_DAY 240. A build now costs about 3-4 AI calls.
 - Measured A/B (6 subjects, real Gemini): Detailed gives +60% shapes, +44% parts, +34% colours; recognisability gain is modest and not proven.
+
+## 2026-10-03: Parts catalog (`src/features.ts`)
+- The AI can now add `"features"`: named parts (wheel, window, windshield, door, headlight, taillight, porthole, eye, spot, hoof, ear, horn, antenna, wing, fin, tower, roof, chimney, battlement, tree, flag, bumper). `features.ts` builds each from ordinary shapes; the prompt's catalog text is generated from the same table. Max 24 per model. Unknown kinds, bad sizes/facings/colours come back to the AI as plain-English problems.
+- Found by mutation testing: feature shapes need an explicit `op:'add'`; paint must reach ~2 studs into the wall or fractional positions paint nothing; one-stud pieces are snapped to a cell centre.
+- Blind test 1 (shape-count Detailed): 5 Detailed, 4 Simple, 1 tie. Wins tracked size, not detail.
+- Blind test 2 (old Simple vs catalog Detailed, 7 subjects): 6 Detailed, 0 Simple, 1 tie. Detailed is now the default (`settings.detail = 'high'`).
+- Tests: 231 unit, 82 server, 150/150 browser.

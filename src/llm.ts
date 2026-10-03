@@ -20,7 +20,7 @@ export const DEFAULTS: Settings = {
   localUrl: 'http://localhost:11434/v1', localModel: 'llama3.2-vision',
   sharedUrl: SHARED_URL, sharedPasscode: '',
   lookCheck: true,
-  detail: 'normal',
+  detail: 'high',
 };
 const KEY = 'brickforge.settings.v1';
 export function loadSettings(): Settings {
