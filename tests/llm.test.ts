@@ -84,18 +84,24 @@ const ask = (s: Settings) => complete(s, 'sys', [{ role: 'user', text: 'hi' }]);
 
 describe('empty boxes are caught before any request', () => {
   it('names what is missing for every provider', () => {
-    expect(missingSetting(gem({ geminiKey: '  ' }))).toMatch(/No Gemini key entered.*aistudio\.google\.com\/apikey/);
+    expect(missingSetting(gem({ geminiKey: '  ', sharedUrl: '' }))).toMatch(/No Gemini key entered.*aistudio\.google\.com\/apikey/)   // no key AND no site Gemini to fall back on;
     expect(missingSetting({ ...DEFAULTS, provider: 'anthropic', anthropicKey: '' })).toMatch(/No Anthropic key entered/);
     expect(missingSetting(shared({ sharedPasscode: '' }))).toBe('');          // shared needs no passcode now
     expect(missingSetting(shared({ sharedUrl: '' }))).toMatch(/address is empty/);
     expect(missingSetting(loc({ localModel: '' }))).toMatch(/Find installed models/);
     expect(missingSetting(gem())).toBe('');
   });
-  it('Test connection and generate send nothing when the key box is empty (the "unregistered callers" 403)', async () => {
-    const f = vi.fn(); vi.stubGlobal('fetch', f);
-    await expect(testConnection(gem({ geminiKey: '' }))).rejects.toThrow(/No Gemini key entered yet/);
-    await expect(ask(gem({ geminiKey: '' }))).rejects.toThrow(/No Gemini key entered yet/);
-    expect(f).not.toHaveBeenCalled();
+  it('an empty Gemini key NEVER sends an empty-key request to Google (the old "unregistered callers" 403)', async () => {
+    // with the site\'s Gemini available: the request goes to the site, never to Google
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json(200, { text: 'ok' }))); vi.stubGlobal('fetch', f); vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    await complete(gem({ geminiKey: '' }), 's', [{ role: 'user', text: 'x' }]);
+    await testConnection(gem({ geminiKey: '' }));
+    for (const c of f.mock.calls) expect(String(c[0])).not.toMatch(/googleapis/);
+    // with nothing to fall back on: nothing is sent at all, and the message says what to do
+    const g = vi.fn(); vi.stubGlobal('fetch', g);
+    await expect(testConnection(gem({ geminiKey: '', sharedUrl: '' }))).rejects.toThrow(/No Gemini key entered yet/);
+    await expect(ask(gem({ geminiKey: '', sharedUrl: '' }))).rejects.toThrow(/No Gemini key entered yet/);
+    expect(g).not.toHaveBeenCalled();
   });
 });
 
@@ -231,5 +237,44 @@ describe('adversarial: the server (or nginx in front of it) answers with somethi
     await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/did not understand|unexpected|problem/i);
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, { nothing: true })));
     await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/no answer|empty|problem/i);
+  });
+});
+
+describe('Gemini with no key of your own: it just works through the site (the key never reaches the browser)', () => {
+  const noKey = (over: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, provider: 'gemini', geminiKey: '', sharedUrl: 'https://proxy.example', ...over });
+  it('is ready to use: no "paste your key" complaint, because the site has Gemini built in', () => {
+    expect(isConfigured(noKey())).toBe(true);
+    expect(missingSetting(noKey())).toBe('');
+  });
+  it('sends the request to the site\'s server, asking for Gemini specifically, and never contacts Google', async () => {
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json(200, { text: 'from-site-gemini' }))); vi.stubGlobal('fetch', f);
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    expect(await complete(noKey(), 'sys', [{ role: 'user', text: 'hi' }])).toBe('from-site-gemini');
+    expect(f).toHaveBeenCalledTimes(1);
+    const [url, init] = f.mock.calls[0];
+    expect(url).toBe('https://proxy.example/v1/ai'); expect(String(url)).not.toMatch(/googleapis/);
+    expect(init.headers['x-dbb-prefer']).toBe('gemini');
+    expect(init.headers['x-goog-api-key']).toBeUndefined();
+  });
+  it('a whitespace-only key counts as no key', async () => {
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json(200, { text: 'ok' }))); vi.stubGlobal('fetch', f); vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    await complete(noKey({ geminiKey: '   ' }), 's', [{ role: 'user', text: 'x' }]);
+    expect(String(f.mock.calls[0][0])).toBe('https://proxy.example/v1/ai');
+  });
+  it('with a key of your own it still talks to Google directly and does NOT ask the site', async () => {
+    const f = vi.fn().mockImplementation(() => Promise.resolve(json(200, { candidates: [{ content: { parts: [{ text: 'direct' }] } }] }))); vi.stubGlobal('fetch', f);
+    expect(await complete(noKey({ geminiKey: 'AQ.mykey' }), 's', [{ role: 'user', text: 'x' }])).toBe('direct');
+    expect(String(f.mock.calls[0][0])).toMatch(/generativelanguage\.googleapis\.com/);
+    expect(f.mock.calls[0][1].headers['x-dbb-prefer']).toBeUndefined();
+  });
+  it('if the site has no shared server configured, an empty key still asks for a key (nothing to fall back on)', () => {
+    expect(isConfigured(noKey({ sharedUrl: '' }))).toBe(false);
+    expect(missingSetting(noKey({ sharedUrl: '' }))).toMatch(/No Gemini key entered/);
+  });
+  it('test connection with no key checks the site\'s server, not Google', async () => {
+    const f = vi.fn().mockImplementation((u: string) => Promise.resolve(String(u).endsWith('/healthz') ? new Response('ok') : json(200, { text: 'OK' })));
+    vi.stubGlobal('fetch', f); vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    expect(await testConnection(noKey())).toBe('OK');
+    expect(f.mock.calls.map(c => String(c[0]))).toEqual(['https://proxy.example/healthz', 'https://proxy.example/v1/ai']);
   });
 });

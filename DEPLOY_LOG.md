@@ -50,3 +50,7 @@ Findings that are NOT fixed (decisions for the owner):
 - The Mac's local model is shared with claude-mem and other tools: trivial requests took 34-87 s to produce a first token, so the 12 s first-token limit sends most kids to Gemini. Keep-warm does not help (an empty-prompt ping does not extend Ollama's expiry on an already loaded model) and is not the bottleneck.
 - Tailscale device keys expire 2027-03-06 (Mac) and 2027-03-30 (VPS); an expired key silently drops the device (kids then get Gemini only). Disable key expiry for both in the Tailscale admin console.
 - Test model `brickbuilder` was created and removed again while measuring; Ollama keeps only one model loaded at a time on this Mac.
+
+## 2026-10-02 "Gemini just works"
+- Choosing Gemini in AI settings with the key box empty now uses the site's built-in Gemini through the shared server (the real key never reaches the browser). The app sends `x-dbb-prefer: gemini`; in auto mode the proxy then skips the Mac and answers with Gemini (log: `via=gemini up=chose-gemini`), using the Gemini allowance. A key typed into the box still goes straight to Google as before. With no key AND no shared server the old "paste a key" message remains and nothing is sent.
+- Proxy deployed to the VPS (backward compatible; rollback copy /opt/dbb-proxy/proxy.mjs.prev3). App change needs a push.

@@ -236,7 +236,7 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       if (path !== '/v1/ai') return send(404, { error: 'Not found.' });
       if (origin && !cfg.origins.includes(origin)) return send(403, { error: 'This website is not allowed to use the shared AI.' });
       if (req.method === 'OPTIONS') {
-        return send(204, '', { 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type, x-dbb-passcode, x-dbb-guest', 'access-control-max-age': '600' });
+        return send(204, '', { 'access-control-allow-methods': 'POST, OPTIONS', 'access-control-allow-headers': 'content-type, x-dbb-passcode, x-dbb-guest, x-dbb-prefer', 'access-control-max-age': '600' });
       }
       if (req.method !== 'POST') return send(405, { error: 'Use POST.' }, { allow: 'POST, OPTIONS' });
 
@@ -303,12 +303,14 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
         const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
         try { return await callUpstream(cfg, which, v.system, v.msgs, ac.signal); } finally { clearTimeout(t); }
       };
+      // A person who picked Gemini in the app (and has no key of their own) asks for it by name: skip the Mac entirely.
+      const preferGemini = cfg.upstream === 'auto' && String(req.headers['x-dbb-prefer'] || '') === 'gemini';
       let out, err, undoFallback = () => {}, used = primary;
       if (cfg.upstream === 'auto') {
         // local AI first; Gemini takes over by itself when the local one is off, slow, or failing
         // The Mac handles only a couple of requests well at once; more kids than that go straight to Gemini instead of queueing.
         // The slot is taken BEFORE any await, so many simultaneous requests cannot all slip past the cap.
-        if (localInFlight < cfg.maxLocalInFlight) {
+        if (!preferGemini && localInFlight < cfg.maxLocalInFlight) {
           localInFlight++;
           try {
             if (await primaryUp()) {
@@ -318,9 +320,9 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
           } finally { localInFlight--; }
         }
         if (err || !out || out.status) {
-          upNote = err ? ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr'}` : out ? ` up=${out.status}` : ' up=down';
+          upNote = preferGemini ? ' up=chose-gemini' : err ? ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr'}` : out ? ` up=${out.status}` : ' up=down';
           const fb = reserve(buildChecks('gemini', 'G:'), Date.now());
-          if (!fb.ok) { refund(); return send(429, { error: `The main AI is resting right now and today's backup allowance is used up (${fb.msg.charAt(0).toLowerCase() + fb.msg.slice(1)}). Please try again in ${waitText(fb.wait)}.` }, { 'retry-after': String(Math.ceil(fb.wait / 1000)) }); }
+          if (!fb.ok) { refund(); return send(429, { error: preferGemini ? `${fb.msg}. Please try again in ${waitText(fb.wait)}.` : `The main AI is resting right now and today's backup allowance is used up (${fb.msg.charAt(0).toLowerCase() + fb.msg.slice(1)}). Please try again in ${waitText(fb.wait)}.` }, { 'retry-after': String(Math.ceil(fb.wait / 1000)) }); }
           undoFallback = fb.undo; used = 'gemini'; err = undefined; out = undefined;
           try { out = await callOne('gemini', cfg.autoFallbackMs); } catch (e) { err = e; }
           if (!err && !out.status) refund();            // Gemini answered, so the main AI's allowance is not spent

@@ -23,9 +23,12 @@ export function loadSettings(): Settings {
 export function saveSettings(s: Settings) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* storage unavailable */ } }
 export function clearKeys() { const s = loadSettings(); s.anthropicKey = ''; s.geminiKey = ''; s.sharedPasscode = ''; saveSettings(s); }
 
+/** Chose Gemini but has no key of their own: use the site's built-in Gemini through the shared server (the real key stays on the server). */
+export const geminiViaSite = (s: Settings) => s.provider === 'gemini' && !s.geminiKey.trim() && !!s.sharedUrl.trim();
+
 export function isConfigured(s: Settings): boolean {
   if (s.provider === 'shared') return !!s.sharedUrl.trim();   // a passcode is optional: without one you are a free guest with a daily allowance
-  return s.provider === 'anthropic' ? !!s.anthropicKey.trim() : s.provider === 'gemini' ? !!s.geminiKey.trim() : !!s.localUrl.trim() && !!s.localModel.trim();
+  return s.provider === 'anthropic' ? !!s.anthropicKey.trim() : s.provider === 'gemini' ? (!!s.geminiKey.trim() || !!s.sharedUrl.trim()) : !!s.localUrl.trim() && !!s.localModel.trim();
 }
 
 type Who = 'anthropic' | 'gemini' | 'local';
@@ -41,7 +44,7 @@ export function passcodeFromHash(hash: string): string | null {
 export function missingSetting(s: Settings): string {
   if (s.provider === 'shared') return s.sharedUrl.trim() ? '' : 'The shared server address is empty. Clear it to use the default, or choose another AI.';
   if (s.provider === 'anthropic') return s.anthropicKey.trim() ? '' : 'No Anthropic key entered yet. Paste your key (it starts with "sk-ant-") in the box above, then try again.';
-  if (s.provider === 'gemini') return s.geminiKey.trim() ? '' : 'No Gemini key entered yet. Paste your key (you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
+  if (s.provider === 'gemini') return s.geminiKey.trim() || s.sharedUrl.trim() ? '' : 'No Gemini key entered yet. Paste your key (you can get one free at aistudio.google.com/apikey) in the box above, then try again.';
   if (!s.localUrl.trim()) return 'Enter the address of your local model server (for Ollama: http://localhost:11434/v1).';
   return s.localModel.trim() ? '' : 'Enter a model name, or press "Find installed models".';
 }
@@ -135,12 +138,12 @@ export function guestId(): string {
 }
 
 /** Shared server: the proxy holds the AI credentials; we send only the passcode. Its error text is already plain language. */
-async function completeShared(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
+async function completeShared(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal, prefer?: 'gemini'): Promise<string> {
   let r: Response;
   try {
     r = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/v1/ai`, {
       method: 'POST', signal,
-      headers: { 'content-type': 'application/json', 'x-dbb-guest': guestId(), ...(s.sharedPasscode.trim() ? { 'x-dbb-passcode': s.sharedPasscode.trim() } : {}) },
+      headers: { 'content-type': 'application/json', 'x-dbb-guest': guestId(), ...(prefer ? { 'x-dbb-prefer': prefer } : {}), ...(s.sharedPasscode.trim() ? { 'x-dbb-passcode': s.sharedPasscode.trim() } : {}) },
       body: JSON.stringify({ system, messages: msgs.map(m => ({ role: m.role, text: m.text, ...(m.image ? { image: { mime: m.image.mime, base64: m.image.base64 } } : {}) })) }),
     });
   } catch (e) { throw netHint(e, 'the shared server'); }
@@ -159,6 +162,7 @@ async function completeShared(s: Settings, system: string, msgs: Msg[], signal?:
 export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
   const missing = missingSetting(s); if (missing) throw new Error(missing);
   if (s.provider === 'shared') return completeShared(s, system, msgs, signal);
+  if (geminiViaSite(s)) return completeShared(s, system, msgs, signal, 'gemini');   // no key of their own: the site's Gemini
   if (s.provider === 'anthropic') {
     let r: Response;
     try {
@@ -216,7 +220,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
 
 export async function testConnection(s: Settings): Promise<string> {
   const missing = missingSetting(s); if (missing) throw new Error(missing);
-  if (s.provider === 'shared') {
+  if (s.provider === 'shared' || geminiViaSite(s)) {
     try { const h = await fetch(`${s.sharedUrl.trim().replace(/\/+$/, '')}/healthz`); if (!h.ok) throw new Error(`status ${h.status}`); }
     catch (e) { throw netHint(e, 'the shared server'); }
   }

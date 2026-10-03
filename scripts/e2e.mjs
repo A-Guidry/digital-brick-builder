@@ -491,13 +491,26 @@ async function mockProxy(page, replies, seen) {
   check('bricklink: upload panel with copy-and-open button', await p.locator('#p-bl').count() === 1 && /Wanted List/.test(await p.locator('.bl-card').innerText()));
   await p.context().close();
 }
-{ // C8 empty Gemini key: Test connection says what is missing and sends nothing to Google
-  const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: '', geminiModel: 'gemini-3.5-flash-lite' });
-  await p.route('https://generativelanguage.googleapis.com/**', r => { seen.push(r.request().url()); r.fulfill({ status: 403, headers: cors, contentType: 'application/json', body: '{"error":{"message":"Method doesn\'t allow unregistered callers"}}' }); });
+{ // C8 Gemini chosen, no key of your own: the site's built-in Gemini is used (the key never reaches the browser)
+  const seen = [], toGoogle = []; const p = await fresh({ provider: 'gemini', geminiKey: '', geminiModel: 'gemini-3.5-flash-lite' });
+  await p.route('https://generativelanguage.googleapis.com/**', r => { toGoogle.push(r.request().url()); r.fulfill({ status: 403, headers: cors, contentType: 'application/json', body: '{"error":{"message":"Method doesn\'t allow unregistered callers"}}' }); });
+  await mockProxy(p, [BOAT], seen);
   await p.click('#btn-settings'); await p.click('#test');
-  await p.waitForFunction(() => { const t = document.querySelector('#test-out').textContent; return t && t !== 'Testing…'; });
-  check('settings: Test with an empty Gemini key says to paste a key', /No Gemini key entered yet.*aistudio/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
-  check('settings: ...and sends nothing to Google', seen.length === 0, String(seen.length));
+  await p.waitForFunction(() => { const t = document.querySelector('#test-out').textContent; return t && t !== 'Testing\u2026'; });
+  check('gemini/no key: Test connection works through the site', /Connected/.test(await p.locator('#test-out').innerText()), await p.locator('#test-out').innerText());
+  seen.length = 0; await p.click('#save-close');
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  check('gemini/no key: Generate works with no key typed anywhere', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat' && await p.locator('#settings[open]').count() === 0);
+  check('gemini/no key: it asks the site for Gemini by name, with no passcode', seen.length === 1 && seen[0].headers['x-dbb-prefer'] === 'gemini' && seen[0].headers['x-dbb-passcode'] === undefined);
+  check('gemini/no key: Google is never contacted from the browser (no empty-key request)', toGoogle.length === 0, toGoogle.join(','));
+  await p.context().close();
+}
+{ // C8b Gemini chosen, no key, and the site has no shared server: a plain message and nothing sent
+  const sent = []; const p = await fresh({ provider: 'gemini', geminiKey: '', sharedUrl: '' });
+  await p.route(/googleapis|brickbuilder-api/, r => { sent.push(r.request().url()); r.abort(); });
+  await p.click('#btn-settings'); await p.click('#test');
+  await p.waitForFunction(() => { const t = document.querySelector('#test-out').textContent; return t && t !== 'Testing\u2026'; });
+  check('gemini/no key and no site server: asks for a key and sends nothing', /No Gemini key entered yet/.test(await p.locator('#test-out').innerText()) && sent.length === 0, sent.join(','));
   await p.context().close();
 }
 { // C9 local model picker: finds what is installed and replaces a model that is not

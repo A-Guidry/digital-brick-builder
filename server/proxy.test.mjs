@@ -527,3 +527,25 @@ test('ADVERSARIAL a local AI that returns an empty stream is treated as failed, 
     assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' });
   } finally { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); srv.closeAllConnections?.(); srv.close(); await g.close(); }
 });
+
+test('ADVERSARIAL "prefer Gemini" (a person who picked Gemini): the Mac is never asked, Gemini answers, Gemini limits apply', async () => {
+  const s = await startAutoStream({ local: 'ok', env: { LIMIT_DAY: 'qwen:60,gemini:1' } });
+  try {
+    const a = await s.kid(1, { 'x-dbb-prefer': 'gemini' }); assert.equal(a.status, 200); assert.deepEqual(await a.json(), { text: 'gemini-reply' });
+    assert.equal(s.q.seen.filter(x => x.url.includes('chat')).length, 0, 'the local AI must not be touched');
+    const b = await s.kid(1, { 'x-dbb-prefer': 'gemini' }); assert.equal(b.status, 429);
+    const msg = (await b.json()).error; assert.match(msg, /free builds/); assert.doesNotMatch(msg, /resting/i);   // not "the main AI is resting": they chose Gemini
+    assert.equal((await s.kid(2)).status, 200);                                          // an ordinary request still uses the Mac
+  } finally { await s.close(); }
+});
+test('ADVERSARIAL "prefer Gemini" cannot be used to dodge a limit or a refusal: junk values are ignored, wrong passcodes still 401', async () => {
+  const s = await startAutoStream({ local: 'ok' });
+  try {
+    const r = await s.kid(3, { 'x-dbb-prefer': 'anything-else' }); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'local-streamed' });
+    const bad = await s.kid(4, { 'x-dbb-prefer': 'gemini', 'x-dbb-passcode': 'not-the-passcode-123456' }); assert.equal(bad.status, 401);
+  } finally { await s.close(); }
+});
+test('preflight allows the prefer header', async () => {
+  const s = await start({ OPEN_ACCESS: '1' });
+  try { const r = await fetch(s.base + '/v1/ai', { method: 'OPTIONS', headers: { origin: SITE, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-dbb-prefer' } }); assert.match(r.headers.get('access-control-allow-headers'), /x-dbb-prefer/); } finally { await s.close(); }
+});
