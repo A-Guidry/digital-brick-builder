@@ -1,4 +1,4 @@
-import { Msg } from './prompt';
+import { Msg, Detail } from './prompt';
 import { SHARED_URL } from './config';
 
 export type ProviderId = 'shared' | 'anthropic' | 'gemini' | 'local';
@@ -8,6 +8,10 @@ export interface Settings {
   geminiKey: string; geminiModel: string;
   localUrl: string; localModel: string;
   sharedUrl: string; sharedPasscode: string;
+  /** After building, the AI looks at its own model from four sides and fixes it if it does not look like the request. */
+  lookCheck: boolean;
+  /** 'high' asks for a bigger, richer model (more shapes, small details). */
+  detail: Detail;
 }
 export const DEFAULTS: Settings = {
   provider: SHARED_URL ? 'shared' : 'anthropic',
@@ -15,6 +19,8 @@ export const DEFAULTS: Settings = {
   geminiKey: '', geminiModel: 'gemini-3.5-flash-lite',
   localUrl: 'http://localhost:11434/v1', localModel: 'llama3.2-vision',
   sharedUrl: SHARED_URL, sharedPasscode: '',
+  lookCheck: true,
+  detail: 'normal',
 };
 const KEY = 'brickforge.settings.v1';
 export function loadSettings(): Settings {
@@ -159,9 +165,9 @@ async function completeShared(s: Settings, system: string, msgs: Msg[], signal?:
   return j.text;
 }
 
-export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {
+export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal, opts: { preferGemini?: boolean } = {}): Promise<string> {
   const missing = missingSetting(s); if (missing) throw new Error(missing);
-  if (s.provider === 'shared') return completeShared(s, system, msgs, signal);
+  if (s.provider === 'shared') return completeShared(s, system, msgs, signal, opts.preferGemini ? 'gemini' : undefined);   // pictures need Gemini, not the Mac's text model
   if (geminiViaSite(s)) return completeShared(s, system, msgs, signal, 'gemini');   // no key of their own: the site's Gemini
   if (s.provider === 'anthropic') {
     let r: Response;
@@ -170,7 +176,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
         method: 'POST', signal,
         headers: { 'content-type': 'application/json', 'x-api-key': s.anthropicKey.trim(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
         body: JSON.stringify({
-          model: s.anthropicModel, max_tokens: 4096, system,
+          model: s.anthropicModel, max_tokens: 8192, system,
           messages: msgs.map(m => ({ role: m.role, content: m.image
             ? [{ type: 'image', source: { type: 'base64', media_type: m.image.mime, data: m.image.base64 } }, { type: 'text', text: m.text }]
             : m.text })),
@@ -191,7 +197,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
           systemInstruction: { parts: [{ text: system }] },
           contents: msgs.map(m => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [
             ...(m.image ? [{ inlineData: { mimeType: m.image.mime, data: m.image.base64 } }] : []), { text: m.text }] })),
-          generationConfig: { maxOutputTokens: 4096, responseMimeType: 'application/json' },
+          generationConfig: { maxOutputTokens: 8192, responseMimeType: 'application/json' },
         }),
       });
     } catch (e) { throw netHint(e, 'Gemini'); }

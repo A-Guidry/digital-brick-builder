@@ -549,3 +549,120 @@ test('preflight allows the prefer header', async () => {
   const s = await start({ OPEN_ACCESS: '1' });
   try { const r = await fetch(s.base + '/v1/ai', { method: 'OPTIONS', headers: { origin: SITE, 'access-control-request-method': 'POST', 'access-control-request-headers': 'content-type,x-dbb-prefer' } }); assert.match(r.headers.get('access-control-allow-headers'), /x-dbb-prefer/); } finally { await s.close(); }
 });
+
+// ---------- ADVERSARIAL: Gemini FIRST on a free-tier key (15 requests/minute PER MODEL, retired models, 503s, crowds) ----------
+/** A Gemini that behaves like Google's free tier. rules: model -> ok | 429 | 429day | 404 | 503 | hang. Records calls per model and the peak per minute. */
+async function startGeminiFake(rules = {}, delayMs = 0) {
+  const calls = {}; const stamps = {};
+  const srv = http.createServer((req, res) => {
+    const m = decodeURIComponent((req.url.match(/models\/([^:/?]+)/) || [])[1] || '?'); req.resume();
+    req.on('end', () => {
+      calls[m] = (calls[m] || 0) + 1; (stamps[m] = stamps[m] || []).push(Date.now());
+      const rule = rules[m] || 'ok';
+      if (rule === 'hang') return;
+      if (rule === '404') { res.writeHead(404, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND', message: 'This model is no longer available to new users.' } })); }
+      if (rule === '503') { res.writeHead(503, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ error: { code: 503, status: 'UNAVAILABLE', message: 'high demand' } })); }
+      if (rule === '429' || rule === '429day') {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        const id = rule === '429day' ? 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' : 'GenerateRequestsPerMinutePerProjectPerModel-FreeTier';
+        return res.end(JSON.stringify({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'You exceeded your current quota', details: [{ '@type': 'type.googleapis.com/google.rpc.QuotaFailure', violations: [{ quotaId: id }] }, { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '2s' }] } }));
+      }
+      setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'gemini-' + m }] } }] })); }, delayMs);   // the real Gemini takes ~0.5 s, which is what makes requests overlap
+    });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  return { calls, stamps, url: `http://127.0.0.1:${srv.address().port}`, rules, close: () => new Promise(r => { srv.closeAllConnections?.(); srv.close(r); }) };
+}
+async function startGF({ gem = {}, local = 'ok', env = {}, delay = 0 } = {}) {
+  const g = await startGeminiFake(gem, delay), q = await startStreamingLocal(local), logs = [];
+  const cfg = loadConfig({ UPSTREAM: 'auto', AUTO_PRIMARY: 'gemini', PASSCODES: `ann:${CODE}`, ALLOWED_ORIGINS: SITE, OPEN_ACCESS: '1',
+    GEMINI_API_KEY: SECRET_KEY, GEMINI_BASE_URL: g.url, GEMINI_MODELS: 'model-a,model-b,model-c', QWEN_BASE_URL: q.url + '/v1', QWEN_MODEL: 'qwen-test',
+    AUTO_FIRST_TOKEN_MS: '400', GEMINI_TRY_MS: '600', GUEST_GLOBAL_DAY: '1000', GUEST_IP_DAY: '1000', LIMIT_DAY: 'qwen:1000,gemini:1000', ...env });
+  const proxy = createProxy(cfg, { log: l => logs.push(l) }); await new Promise(r => proxy.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${proxy.address().port}`;
+  const kid = (n, h = {}) => fetch(base + '/v1/ai', { method: 'POST', headers: { 'content-type': 'application/json', origin: SITE, 'x-dbb-guest': 'gemini-first-kid-id-' + String(n).padStart(5, '0'), 'x-forwarded-for': '198.51.100.' + (n % 250 + 1), ...h }, body: JSON.stringify(REQ) });
+  return { kid, g, q, logs, close: async () => { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); await g.close(); await q.close(); } };
+}
+const txt = async (r) => (await r.json()).text;
+
+test('GEMINI-FIRST healthy: Gemini answers from the first model and the Mac is never touched', async () => {
+  const s = await startGF();
+  try { const r = await s.kid(1); assert.equal(r.status, 200); assert.equal(await txt(r), 'gemini-model-a'); assert.equal(s.q.seen.filter(x => x.url.includes('chat')).length, 0); assert.match(s.logs.join('\n'), /via=gemini/); } finally { await s.close(); }
+});
+test('GEMINI-FIRST a model hits its rate limit (429): the very same request moves to the next model, the kid sees nothing', async () => {
+  const s = await startGF({ gem: { 'model-a': '429' } });
+  try { const r = await s.kid(2); assert.equal(r.status, 200); assert.equal(await txt(r), 'gemini-model-b'); } finally { await s.close(); }
+});
+test('GEMINI-FIRST a rate-limited model is remembered and left alone (not hammered again while cooling)', async () => {
+  const s = await startGF({ gem: { 'model-a': '429' } });
+  try { await s.kid(3); await s.kid(4); await s.kid(5); assert.equal(s.g.calls['model-a'], 1, `model-a was asked ${s.g.calls['model-a']} times`); assert.equal(s.g.calls['model-b'], 3); } finally { await s.close(); }
+});
+test('GEMINI-FIRST a retired model (404) is skipped for good, and a 503 moves on at once with no 1.5 s retry wait', async () => {
+  const s = await startGF({ gem: { 'model-a': '404', 'model-b': '503' } });
+  try { const { r, ms } = await timed(s.kid(6)); assert.equal(await txt(r), 'gemini-model-c'); assert.ok(ms < 1200, `took ${ms}ms`); await s.kid(7); assert.equal(s.g.calls['model-a'], 1); } finally { await s.close(); }
+});
+test('GEMINI-FIRST a DAILY quota refusal cools that model for a long time, not a few seconds', async () => {
+  const s = await startGF({ gem: { 'model-a': '429day' } });
+  try { await s.kid(8); await new Promise(r => setTimeout(r, 2600)); await s.kid(9); assert.equal(s.g.calls['model-a'], 1, 'must not retry a model whose DAY quota is gone after only the 2 s per-minute delay'); } finally { await s.close(); }
+});
+test('GEMINI-FIRST our own pacing keeps Google under its per-minute limit: no model is ever asked more than the budget', async () => {
+  const s = await startGF({ env: { GEMINI_RPM_PER_MODEL: '3' }, delay: 200 });
+  try {
+    const all = await Promise.all(Array.from({ length: 9 }, (_, i) => s.kid(20 + i)));
+    assert.deepEqual(all.map(r => r.status).filter(c => c !== 200), [], 'nobody should fail when the pool can carry the load');
+    for (const m of ['model-a', 'model-b', 'model-c']) assert.ok((s.g.calls[m] || 0) <= 3, `${m} was asked ${s.g.calls[m]} times in a minute (budget 3)`);
+    assert.equal(['model-a', 'model-b', 'model-c'].reduce((n, m) => n + (s.g.calls[m] || 0), 0), 9, 'all nine must have been answered by Gemini (spread over the pool), not by the Mac');
+    assert.equal(s.q.seen.filter(x => x.url.includes('chat')).length, 0);
+  } finally { await s.close(); }
+});
+test('GEMINI-FIRST every Gemini model is down: the Mac (if alive) answers, and the kid still gets a build', async () => {
+  const s = await startGF({ gem: { 'model-a': '503', 'model-b': '429', 'model-c': '404' }, local: 'ok' });
+  try { const r = await s.kid(30); assert.equal(r.status, 200); assert.equal(await txt(r), 'local-streamed'); assert.match(s.logs.join('\n'), /via=qwen/); assert.ok(['model-a', 'model-b', 'model-c'].every(m => s.g.calls[m] === 1), 'every Gemini model must have been tried before the Mac was used: ' + JSON.stringify(s.g.calls)); } finally { await s.close(); }
+});
+test('GEMINI-FIRST everything is down: a plain, honest message and a retry hint, no leak of keys or upstream text', async () => {
+  const s = await startGF({ gem: { 'model-a': '429', 'model-b': '429', 'model-c': '429' }, local: 'blackhole' });
+  try {
+    const r = await s.kid(31); assert.equal(r.status, 429);
+    const body = JSON.stringify(await r.json()); assert.match(body, /busy|try again/i); assert.ok(!body.includes(SECRET_KEY) && !/quota|RESOURCE_EXHAUSTED/i.test(body), body);
+    assert.ok(Number(r.headers.get('retry-after')) > 0);
+  } finally { await s.close(); }
+});
+test('GEMINI-FIRST Gemini that hangs does not trap the kid: the next model answers within the per-try limit', async () => {
+  const s = await startGF({ gem: { 'model-a': 'hang' } });
+  try { const { r, ms } = await timed(s.kid(32)); assert.equal(await txt(r), 'gemini-model-b'); assert.ok(ms < 1500, `took ${ms}ms`); } finally { await s.close(); }
+});
+test('GEMINI-FIRST sixteen kids at once on a pool whose models each allow few: all answered, none told "busy" while capacity exists', async () => {
+  const s = await startGF({ env: { GEMINI_RPM_PER_MODEL: '6' }, delay: 200 });
+  try { const all = await Promise.all(Array.from({ length: 16 }, (_, i) => s.kid(40 + i))); assert.deepEqual(all.map(r => r.status).filter(c => c !== 200), []); assert.equal(['model-a', 'model-b', 'model-c'].reduce((n, m) => n + (s.g.calls[m] || 0), 0), 16); for (const m of ['model-a', 'model-b', 'model-c']) assert.ok(s.g.calls[m] <= 6, m + ' got ' + s.g.calls[m]); } finally { await s.close(); }
+});
+test('GEMINI-FIRST the key and Google error text never appear in any log line or response', async () => {
+  const s = await startGF({ gem: { 'model-a': '429' } });
+  try { const r = await s.kid(60); const body = JSON.stringify(await r.json()); await s.kid(61); const all = body + s.logs.join('\n'); assert.ok(!all.includes(SECRET_KEY)); assert.ok(!/RESOURCE_EXHAUSTED|exceeded your current quota/i.test(all)); } finally { await s.close(); }
+});
+test('GEMINI-FIRST a request that asks for local-first style "prefer gemini" still works (same pool), and a bad key shape cannot crash startup', async () => {
+  const s = await startGF();
+  try { const r = await s.kid(62, { 'x-dbb-prefer': 'gemini' }); assert.equal(r.status, 200); } finally { await s.close(); }
+  assert.throws(() => loadConfig({ UPSTREAM: 'auto', AUTO_PRIMARY: 'gemini', PASSCODES: `a:${CODE}`, ALLOWED_ORIGINS: SITE, QWEN_BASE_URL: 'http://x/v1', QWEN_MODEL: 'm' }), /GEMINI_API_KEY is required/);
+  assert.throws(() => loadConfig({ UPSTREAM: 'auto', AUTO_PRIMARY: 'nonsense', PASSCODES: `a:${CODE}`, ALLOWED_ORIGINS: SITE, QWEN_BASE_URL: 'http://x/v1', QWEN_MODEL: 'm', GEMINI_API_KEY: 'k' }), /AUTO_PRIMARY must be/);
+});
+
+test('GEMINI-FIRST forty kids at the same instant, pool has room: nobody is turned away with "busy"', async () => {
+  const s = await startGF({ env: { GEMINI_RPM_PER_MODEL: '20' }, delay: 300 });
+  try {
+    const all = await Promise.all(Array.from({ length: 40 }, (_, i) => s.kid(300 + i)));
+    const codes = all.map(r => r.status);
+    assert.deepEqual(codes.filter(c => c !== 200), [], `statuses: ${codes.filter(c => c !== 200).join(',')}`);
+  } finally { await s.close(); }
+});
+test('GEMINI-FIRST far more than the pool can carry: the excess gets a friendly "try again in N seconds", nothing crashes, nothing leaks, and Google is never over its budget', async () => {
+  const s = await startGF({ env: { GEMINI_RPM_PER_MODEL: '5' }, local: 'blackhole', delay: 300 });
+  try {
+    const all = await Promise.all(Array.from({ length: 60 }, (_, i) => s.kid(400 + i)));
+    const ok = all.filter(r => r.status === 200).length, limited = all.filter(r => r.status === 429);
+    assert.equal(ok + limited.length, 60, 'every request must end as success or a clean 429');
+    assert.ok(ok >= 10 && ok <= 15, `pool of 3 x 5 should answer about 15, answered ${ok}`);
+    for (const m of ['model-a', 'model-b', 'model-c']) assert.ok(s.g.calls[m] <= 5, `${m} was asked ${s.g.calls[m]} times (budget 5)`);
+    const body = await limited[0].json(); assert.match(body.error, /try again in about \d+ seconds/); assert.ok(Number(limited[0].headers.get('retry-after')) >= 5);
+  } finally { await s.close(); }
+});

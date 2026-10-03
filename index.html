@@ -34,6 +34,7 @@
       <textarea id="prompt" rows="3" placeholder="a red fire truck, a sitting cat, the Eiffel tower…"></textarea>
       <div id="drop" tabindex="0"><span id="drop-text">…or drop / paste / click to add a picture</span><img id="drop-img" alt="" hidden><button id="drop-clear" hidden title="Remove picture">×</button></div>
       <input type="file" id="file" accept="image/*" hidden>
+      <div class="seg wide" id="detail" role="group" aria-label="How much detail"><button type="button" data-d="normal">Simple</button><button type="button" data-d="high">Detailed</button></div>
       <button id="go" class="primary">Generate</button>
       <div id="ai-note" class="note"></div>
     </section>
@@ -125,6 +126,7 @@
       <div class="row"><button type="button" id="find-models">Find installed models</button><span id="models-out" class="note"></span></div>
       <p class="note">Pictures need a vision-capable local model. This is a website, so your browser must allow it to reach your computer, and the server must accept it (Ollama: OLLAMA_ORIGINS). Opening the app at http://localhost always works.</p>
     </div>
+    <label class="chk"><input type="checkbox" id="lookCheck"> After building, let the AI look at its own model and fix it if it does not look right <span class="dim">(takes a few seconds longer and uses more AI requests)</span></label>
     <div class="row"><button type="button" id="test">Test connection</button><span id="test-out" class="note"></span></div>
     <div class="row end"><button type="button" id="clear-keys">Clear saved keys</button><button type="button" id="save-close" class="primary">Save &amp; close</button></div>
   </form>

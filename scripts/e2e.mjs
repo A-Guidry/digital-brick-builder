@@ -13,7 +13,9 @@ async function fresh(settings, viewport = { width: 1440, height: 860 }) {
   page.errors = [];
   page.on('pageerror', e => page.errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) page.errors.push(m.text()); });
-  if (settings) await page.addInitScript(s => localStorage.setItem('brickforge.settings.v1', JSON.stringify(s)), settings);
+  // The look-at-it check adds extra AI calls on purpose; ordinary tests pin the request shape, so it is off unless a test asks for it.
+  const seeded = { lookCheck: false, ...(settings || {}) };
+  await page.addInitScript(s => localStorage.setItem('brickforge.settings.v1', JSON.stringify(s)), seeded);
   await page.goto(url, { timeout: 120000 });
   await page.waitForFunction(() => !document.querySelector('#stage.busy') && window.__bf?.model, null, { timeout: 40000 });
   return page;
@@ -253,6 +255,72 @@ async function mockProxy(page, replies, seen) {
   check('guest: the same browser keeps the same id', seen.length === 2 && seen[1].headers['x-dbb-guest'] === id1);
   await p.context().close();
 }
+// ---------- C7. Look-at-it check and Detailed mode (real critic prompt, real JPEG sheet, scripted judge) ----------
+async function mockJudge(page, builds, verdicts, seen) {
+  await page.route(`${PROXY}/**`, async route => {
+    const req = route.request();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (req.url().endsWith('/healthz')) return route.fulfill({ status: 200, headers: cors, contentType: 'text/plain', body: 'ok' });
+    const body = JSON.parse(req.postData()); const judge = /strict but kind judge/.test(body.system);
+    seen.push({ judge, body });
+    const q = judge ? verdicts : builds; const r = q.length > 1 ? q.shift() : q[0];
+    if (r && r.status) return route.fulfill({ status: r.status, headers: cors, contentType: 'application/json', body: JSON.stringify({ error: 'x' }) });
+    route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ text: typeof r === 'string' ? r : '```json\n' + JSON.stringify(r) + '\n```' }) });
+  });
+}
+const BETTER = { ...BOAT, name: 'Better boat' };
+const jpegOk = b64 => typeof b64 === 'string' && Buffer.from(b64, 'base64').subarray(0, 3).toString('hex') === 'ffd8ff';
+{ // low score -> photographed sheet sent -> corrected model replaces it
+  const seen = []; const p = await fresh({ lookCheck: true }); await mockJudge(p, [BOAT, BETTER], [{ sees: 'a flat slab', matches: false, score: 3, missing: ['no bow'], fix: 'add a pointed bow' }, { sees: 'a boat', matches: true, score: 9, missing: [], fix: '' }], seen);
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  const judges = seen.filter(x => x.judge);
+  const img = judges[0]?.body.messages.find(m => m.image)?.image;
+  check('look: the judge is sent a real JPEG picture of the model', !!img && img.mime === 'image/jpeg' && jpegOk(img.base64) && img.base64.length > 5000, img ? `${img.mime} ${img.base64.length}` : 'no image');
+  check('look: a low score asks the builder for a fix that quotes the problem', seen.some(x => !x.judge && /no bow/.test(JSON.stringify(x.body.messages))));
+  check('look: the corrected model is the one left on screen', (await p.evaluate(() => window.__bf.model?.name)) === 'Better boat' && judges.length === 2, `${judges.length} looks`);
+  check('look: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await p.context().close();
+}
+{ // good score -> no rebuild
+  const seen = []; const p = await fresh({ lookCheck: true }); await mockJudge(p, [BOAT, BETTER], [{ sees: 'a boat', matches: true, score: 9, missing: [], fix: '' }], seen);
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  check('look: a good score leaves the first model alone (1 build + 1 look)', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat' && seen.length === 2, String(seen.length));
+  await p.context().close();
+}
+{ // judge answers nonsense, or fails: the model stays, nothing breaks
+  for (const [label, verdicts] of [['garbage', ['I think it looks lovely!']], ['server error', [{ status: 502 }]]]) {
+    const seen = []; const p = await fresh({ lookCheck: true }); await mockJudge(p, [BOAT, BETTER], verdicts, seen);
+    await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+    check(`look: judge ${label} -> the first model is kept, no banner, no errors`, (await p.evaluate(() => window.__bf.model?.name)) === 'Boat' && (await p.locator('#banner').isHidden()) && p.errors.length === 0, p.errors.join('|'));
+    await p.context().close();
+  }
+}
+{ // a worse rebuild is not kept
+  const seen = []; const p = await fresh({ lookCheck: true }); await mockJudge(p, [BOAT, BETTER], [{ sees: 'meh', matches: false, score: 5, missing: ['bow'], fix: 'bow' }, { sees: 'worse', matches: false, score: 2, missing: ['everything'], fix: 'x' }], seen);
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  check('look: if the rebuild scores worse, the earlier model is put back', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
+  await p.context().close();
+}
+{ // switched off, and never used with the local model
+  for (const [label, st] of [['switched off', { lookCheck: false }], ['local provider', { provider: 'local', localUrl: 'http://localhost:1/v1', localModel: 'x', lookCheck: true }]]) {
+    const seen = []; const p = await fresh(st); await mockJudge(p, [BOAT], [{ sees: 'x', matches: false, score: 1, missing: ['a'], fix: 'b' }], seen);
+    if (label === 'switched off') { await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p); }
+    check(`look: ${label} -> the judge is never called`, seen.every(x => !x.judge));
+    await p.context().close();
+  }
+}
+{ // Simple / Detailed switch
+  const seen = []; const p = await fresh({}); await mockJudge(p, [BOAT], [{ sees: 'a boat', matches: true, score: 9, missing: [], fix: '' }], seen);
+  await p.click('#detail button[data-d=high]');
+  check('detail: the Detailed button shows as selected and is remembered', (await p.locator('#detail button[data-d=high].on').count()) === 1 && (await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1')).detail)) === 'high');
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  const sysHigh = seen.find(x => !x.judge)?.body.system || '';
+  await p.click('#detail button[data-d=normal]'); seen.length = 0;
+  await p.fill('#prompt', 'a small red boat'); await p.click('#go'); await idle(p);
+  const sysNormal = seen.find(x => !x.judge)?.body.system || '';
+  check('detail: Detailed asks for many small details, Simple does not', /ADD DETAIL/.test(sysHigh) && !/ADD DETAIL/.test(sysNormal), `${sysHigh.length} vs ${sysNormal.length}`);
+  await p.context().close();
+}
 { // C6e a picture the browser cannot read (corrupt, or a type it cannot decode): a clear message, no crash, still usable
   const p = await fresh(null);
   await p.setInputFiles('#file', { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('this is not really a picture') });
@@ -265,7 +333,7 @@ async function mockProxy(page, replies, seen) {
 }
 { // C6b shared server: first-time default, passcode flow, friendly limit message, no passcode in profile file
   const seen = []; const p = await fresh(null);
-  check('shared: first-time visitors start on "Shared server", ready to go, no passcode asked', await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{"provider":"shared"}').provider) === 'shared' && /AI: shared server/.test(await p.locator('#ai-note').innerText()) && !/passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
+  check('shared: first-time visitors start on "Shared server", ready to go, no passcode asked', await p.evaluate(() => (JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{}').provider ?? 'shared')) === 'shared' && /AI: shared server/.test(await p.locator('#ai-note').innerText()) && !/passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
   await mockProxy(p, [BOAT], seen);
   await p.click('#btn-settings');
   check('shared: only the passcode is shown (no key/model fields)', await p.locator('#sharedPasscode').isVisible() && !(await p.locator('#anthropicKey').isVisible()) && !(await p.locator('#geminiKey').isVisible()));

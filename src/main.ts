@@ -11,6 +11,7 @@ import { makeBags, Bag } from './bags';
 import type { LooseSpec } from './pile';
 import { partsList, wantedListXml, csv } from './bricklink';
 import { PART_BY_ID, COLOR_BY_ID } from './catalog';
+import { parseVerdict, criticSystemPrompt, criticUserText, revisionPrompt, improveByLooking } from './critic';
 import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, detectLocalServer, pickChatModel, gatewayWarmModel, passcodeFromHash, Settings, ProviderId } from './llm';
 import { systemPrompt, userPrompt, Msg } from './prompt';
 
@@ -32,7 +33,7 @@ let currentKey = '', pendingKey = '', needTray = false;
 let saveTimer = 0;
 function commit() { clearTimeout(saveTimer); saveTimer = window.setTimeout(() => saveProfile(profile), 250); }
 window.addEventListener('pagehide', () => { clearTimeout(saveTimer); saveProfile(profile); });
-(window as any).__bf = { viewer, get model() { return model; }, get steps() { return steps; }, toScreen(x: number, y: number, z: number) { const r = viewer.renderer.domElement.getBoundingClientRect(); const v = new (viewer.camera.position.constructor as any)(x, y, z).project(viewer.camera); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; } }; // test hook
+(window as any).__bf = { viewer, get model() { return model; }, get spec() { return spec; }, get steps() { return steps; }, toScreen(x: number, y: number, z: number) { const r = viewer.renderer.domElement.getBoundingClientRect(); const v = new (viewer.camera.position.constructor as any)(x, y, z).project(viewer.camera); return [r.left + (v.x + 1) / 2 * r.width, r.top + (1 - v.y) / 2 * r.height]; } }; // test hook
 
 // ---------- log ----------
 function logReset() { $('#log').innerHTML = ''; }
@@ -465,12 +466,34 @@ async function generate() {
   try {
     const first: Msg = { role: 'user', text: userPrompt(text, !!image), image: image ? { mime: image.mime, base64: image.base64 } : undefined };
     const ask = (sys: string, msgs: Msg[]) => complete(settings, sys, msgs);
-    const reply = await ask(systemPrompt(), [first]);
+    const reply = await ask(systemPrompt(settings.detail), [first]);
     log('AI replied with a shape spec. Compiling to real parts…', 'prog');
     const res = await buildWithRepair({ rawText: reply }, ask, { original: first, onStatus: s => log(s, 'prog') });
     pendingKey = '';
     if (res.ok && res.spec) pendingKey = 'b:' + addBuild(res.spec, text, 'ai').id;
-    showResult(res, text.slice(0, 40) || 'picture');
+    const label = text.slice(0, 40) || 'picture';
+    showResult(res, label);
+    // The build checks only prove the bricks connect. Now the AI LOOKS at what was built and fixes it if it is not what was asked for.
+    if (res.ok && res.spec && !image && pendingKey && settings.lookCheck !== false && settings.provider !== 'local') {
+      const savedId = pendingKey.slice(2);
+      setNote('Checking how it looks…');
+      await improveByLooking<BuildResult>({
+        request: text, first: res,
+        critique: async () => {
+          const img = viewer.snapshotSheet(); if (!img) return null;
+          const raw = await complete(settings, criticSystemPrompt(), [{ role: 'user', text: criticUserText(text), image: { mime: img.mime, base64: img.base64 } }], undefined, { preferGemini: true });
+          return parseVerdict(raw);
+        },
+        revise: async (cur, v) => {
+          const reply = await ask(systemPrompt(settings.detail), [{ role: 'user', text: revisionPrompt(text, JSON.stringify(cur.spec), v) }]);
+          const next = await buildWithRepair({ rawText: reply }, ask, { original: first, onStatus: s => log(s, 'prog') });
+          return next.ok && next.spec ? next : null;
+        },
+        show: r => { showResult(r, label); if (r.ok && r.spec) updateSavedSpec(savedId, r.spec); },
+        log: m => log(m, 'LOOK'),
+      });
+      setNote(`AI: ${settings.provider === 'shared' ? 'shared server' : settings.provider}`);
+    }
     if (phone.matches && appEl.dataset.panel === 'create') tab('steps');
   } catch (e) {
     log((e as Error).message, 'ERROR', true); setNote((e as Error).message, true);
@@ -483,9 +506,11 @@ function syncSettingsUi() {
   for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) ($(`#${k}`) as HTMLInputElement).value = settings[k];
   document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.classList.toggle('on', b.dataset.p === settings.provider));
   document.querySelectorAll<HTMLElement>('[data-for]').forEach(d => d.hidden = d.dataset.for !== settings.provider);
+  ($('#lookCheck') as HTMLInputElement).checked = settings.lookCheck !== false;
   $('#test-out').textContent = '';
 }
 function readSettingsUi() {
+  settings.lookCheck = ($('#lookCheck') as HTMLInputElement).checked;
   for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) settings[k] = ($(`#${k}`) as HTMLInputElement).value.trim();
 }
 let localVerified = false;   // true once a local server that accepts this website has been found in this visit
@@ -516,6 +541,10 @@ async function findModels(): Promise<boolean> {
   out.textContent = [...notes, `Installed: ${hit.models.join(', ')}`].join(' ');
   return true;
 }
+// Simple / Detailed switch next to Generate
+function syncDetailUi() { document.querySelectorAll<HTMLElement>('#detail button').forEach(b => b.classList.toggle('on', b.dataset.d === (settings.detail === 'high' ? 'high' : 'normal'))); }
+document.querySelectorAll<HTMLElement>('#detail button').forEach(b => b.onclick = () => { settings.detail = b.dataset.d === 'high' ? 'high' : 'normal'; saveSettings(settings); syncDetailUi(); });
+syncDetailUi();
 $('#find-models').onclick = () => { readSettingsUi(); void findModels(); };
 $('#btn-settings').onclick = () => { syncSettingsUi(); dlg.showModal(); if (settings.provider === 'local') void findModels(); };
 document.querySelectorAll<HTMLElement>('#prov button').forEach(b => b.onclick = () => { readSettingsUi(); settings.provider = b.dataset.p as ProviderId; saveSettings(settings); syncSettingsUi(); refreshNote(); if (settings.provider === 'local') void findModels(); });
@@ -533,6 +562,11 @@ $('#test').onclick = async () => {
 };
 
 // ---------- saved builds, progress, share links, profile dialog ----------
+/** After the AI corrected a model, the saved copy follows (no duplicate). */
+function updateSavedSpec(id: string, sp: ShapeSpec) {
+  const b = profile.builds.find(x => x.id === id); if (!b) return;
+  b.spec = sp; b.name = (sp.name || b.name).slice(0, PLIM.name); commit();
+}
 function addBuild(sp: ShapeSpec, prompt: string, source: SavedBuild['source']): SavedBuild {
   const sig = JSON.stringify(sp);
   const dup = profile.builds.find(b => JSON.stringify(b.spec) === sig);

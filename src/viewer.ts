@@ -359,6 +359,40 @@ export class Viewer {
     }
     this.clear(this.ghostRoot);
   }
+  /** One picture holding four views of the finished model (front, side, three-quarter, back), for the AI to look at.
+   *  The screen is left exactly as it was: camera, size, which bricks are visible, highlights and ghosts. */
+  snapshotSheet(tile = 336): { mime: 'image/jpeg'; base64: string; width: number; height: number } | null {
+    if (!this.model || this.buildActive) return null;
+    const r = this.renderer, cam = this.camera, parts = new Map(this.model.parts.map(p => [p.id, p]));
+    const saved = { pos: cam.position.clone(), quat: cam.quaternion.clone(), aspect: cam.aspect, target: this.controls.target.clone(), size: r.getSize(new THREE.Vector2()), pr: r.getPixelRatio(), ghost: this.ghostRoot.visible, pile: this.pile.group.visible };
+    const keep = [...this.meshes.entries()].map(([id, m]) => ({ id, m, vis: m.visible, mat: m.material, outlines: m.children.filter(c => c.userData.outline).map(c => ({ c, vis: c.visible })) }));
+    try {
+      for (const k of keep) { const p = parts.get(k.id); k.m.visible = true; if (p) k.m.material = this.material(p.color); for (const o of k.outlines) o.c.visible = false; }
+      this.ghostRoot.visible = false; this.pile.group.visible = false;
+      const [sx, sz, sy] = this.model.size, h = sy * PLATE, target = new THREE.Vector3(0, h / 2, 0);
+      const radius = Math.sqrt(sx * sx + sz * sz + h * h) / 2 + 1.5, dist = (radius / Math.sin(THREE.MathUtils.degToRad(cam.fov / 2))) * 1.05;
+      r.setPixelRatio(1); r.setSize(tile, tile, false); cam.aspect = 1; cam.updateProjectionMatrix();
+      const out = document.createElement('canvas'); out.width = out.height = tile * 2;
+      const g = out.getContext('2d')!; g.fillStyle = '#eef2f7'; g.fillRect(0, 0, out.width, out.height);
+      const views: [string, [number, number, number]][] = [['front', [0, 0.18, 1]], ['side', [1, 0.18, 0]], ['three-quarter', [0.75, 0.55, 0.85]], ['back', [0, 0.18, -1]]];
+      views.forEach(([name, d], i) => {
+        cam.position.copy(target).addScaledVector(new THREE.Vector3(...d).normalize(), dist); cam.lookAt(target);
+        r.render(this.scene, cam);
+        const x = (i % 2) * tile, y = Math.floor(i / 2) * tile;
+        g.drawImage(r.domElement, x, y, tile, tile);
+        g.strokeStyle = '#9aa7b8'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, tile - 2, tile - 2);
+        g.font = 'bold 15px system-ui, sans-serif'; g.fillStyle = '#334155'; g.fillText(name, x + 10, y + 22);
+      });
+      const url = out.toDataURL('image/jpeg', 0.82);
+      return { mime: 'image/jpeg', base64: url.split(',')[1], width: out.width, height: out.height };
+    } finally {
+      for (const k of keep) { k.m.visible = k.vis; k.m.material = k.mat; for (const o of k.outlines) o.c.visible = o.vis; }
+      this.ghostRoot.visible = saved.ghost; this.pile.group.visible = saved.pile;
+      r.setPixelRatio(saved.pr); r.setSize(saved.size.x, saved.size.y, false);
+      cam.aspect = saved.aspect; cam.position.copy(saved.pos); cam.quaternion.copy(saved.quat); cam.updateProjectionMatrix();
+      this.controls.target.copy(saved.target); this.controls.update();
+    }
+  }
   showAll() {
     for (const [id, m] of this.meshes) { const q = this.model!.parts.find(x => x.id === id)!; m.position.copy(this.position(q)); }
     for (const [id, m] of this.meshes) { m.visible = true; m.material = this.material(this.model!.parts.find(q => q.id === id)!.color); this.setOutline(m, false); }

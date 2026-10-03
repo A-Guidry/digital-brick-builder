@@ -51,21 +51,25 @@ export function loadConfig(env) {
   if (upstream === 'anthropic') need('ANTHROPIC_API_KEY');
   if (upstream === 'gemini' || upstream === 'auto') need('GEMINI_API_KEY');
   if (upstream === 'qwen' || upstream === 'auto') { need('QWEN_BASE_URL'); need('QWEN_MODEL'); }
+  if (env.AUTO_PRIMARY && !['local', 'gemini'].includes(env.AUTO_PRIMARY)) errs.push('AUTO_PRIMARY must be local or gemini');
   const cfg = {
     upstream, passcodes, origins, perDay, perHour, globalDay,
+    autoPrimary: env.AUTO_PRIMARY || 'local',
+    geminiModels: (env.GEMINI_MODELS || env.GEMINI_MODEL || 'gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash').split(',').map(x => x.trim()).filter(Boolean),
+    geminiRpm: int(env.GEMINI_RPM_PER_MODEL, 12), geminiTryMs: int(env.GEMINI_TRY_MS, 25_000),
     autoFirstTokenMs: int(env.AUTO_FIRST_TOKEN_MS, 12_000), maxLocalInFlight: int(env.MAX_LOCAL_IN_FLIGHT, 2),
     autoPrimaryMs: int(env.AUTO_PRIMARY_TIMEOUT_MS, 60_000), autoFallbackMs: int(env.AUTO_FALLBACK_TIMEOUT_MS, 50_000), guestGlobalGeminiDay: int(env.GUEST_GLOBAL_GEMINI_DAY, 60),
     openAccess: env.OPEN_ACCESS === '1', guestGlobalDay: int(env.GUEST_GLOBAL_DAY, 150), guestIpDay: int(env.GUEST_IP_DAY, 40),
     host: env.HOST || '127.0.0.1', port: int(env.PORT, 8787),
     maxBodyBytes: int(env.MAX_BODY_BYTES, 1_000_000), maxTokens: int(env.MAX_TOKENS, 4096),
-    timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, upstream === 'auto' ? 12 : 3),
+    timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, upstream === 'auto' ? 60 : 3),   // a burst of kids arrives together; each finishes in about a second, so this is only a runaway guard
     anthropicKey: env.ANTHROPIC_API_KEY || '', anthropicModel: env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
     anthropicBase: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, ''),
     geminiKey: env.GEMINI_API_KEY || '', geminiModel: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
     geminiBase: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/+$/, ''),
     qwenBase: (env.QWEN_BASE_URL || '').replace(/\/+$/, ''), qwenModel: env.QWEN_MODEL || '', qwenKey: env.QWEN_API_KEY || '',
   };
-  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight', 'guestGlobalDay', 'guestIpDay', 'autoPrimaryMs', 'autoFallbackMs', 'autoFirstTokenMs', 'maxLocalInFlight', 'guestGlobalGeminiDay']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
+  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight', 'guestGlobalDay', 'guestIpDay', 'autoPrimaryMs', 'autoFallbackMs', 'autoFirstTokenMs', 'maxLocalInFlight', 'geminiRpm', 'geminiTryMs', 'guestGlobalGeminiDay']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
   if (errs.length) throw new Error('Configuration problem:\n - ' + errs.join('\n - '));
   return cfg;
 }
@@ -99,7 +103,7 @@ function toOpenAi(system, msgs, cfg) {
       : m.text }))],
   };
 }
-async function callUpstream(cfg, which, system, msgs, signal) {
+async function callUpstream(cfg, which, system, msgs, signal, opts = {}) {
   let url, headers = { 'content-type': 'application/json' }, body, pick;
   if (which === 'anthropic') {
     url = `${cfg.anthropicBase}/v1/messages`;
@@ -124,13 +128,33 @@ async function callUpstream(cfg, which, system, msgs, signal) {
   }
   // One quick retry when the AI says it is overloaded or hiccuping (5xx); stays inside the overall timeout.
   let r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
-  if (r.status >= 500 && !signal.aborted) {
+  if (r.status >= 500 && !signal.aborted && opts.retry5xx !== false) {
     await r.arrayBuffer().catch(() => {});
     await new Promise(res => setTimeout(res, 1500));
     r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
   }
-  if (!r.ok) { await r.arrayBuffer().catch(() => {}); return { status: r.status }; } // upstream body is never forwarded or logged
+  if (!r.ok) { const errText = await r.text().catch(() => ''); return { status: r.status, info: which === 'gemini' ? parseGeminiError(errText) : undefined }; } // upstream text is never forwarded or logged
   return { text: pick(await r.json()) };
+}
+
+/** What Google's refusal tells us, without keeping any of its text: how long to wait, and whether the DAY allowance is gone. */
+function parseGeminiError(text) {
+  try {
+    const details = Array.isArray(JSON.parse(text)?.error?.details) ? JSON.parse(text).error.details : [];
+    let retryMs, daily = false;
+    for (const d of details) {
+      const m = typeof d?.retryDelay === 'string' && d.retryDelay.match(/^(\d+(?:\.\d+)?)s$/);
+      if (m) retryMs = Math.ceil(Number(m[1]) * 1000);
+      for (const v of Array.isArray(d?.violations) ? d.violations : []) if (/PerDay/i.test(String(v?.quotaId))) daily = true;
+    }
+    return { retryMs, daily };
+  } catch { return {}; }
+}
+/** Google's daily counts reset at midnight Pacific time. */
+function msUntilPacificMidnight() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(new Date()).map(x => [x.type, x.value]));
+  const secs = (Number(p.hour) % 24) * 3600 + Number(p.minute) * 60 + Number(p.second);
+  return Math.min(86_400_000, (86_400 - secs) * 1000 + 5000);
 }
 
 /** Ask the local AI in streaming mode so we can tell "slow to start" (busy, cold, or the Mac went silent) from "working".
@@ -199,6 +223,33 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
   const hourly = new Window(), daily = new Window(), global = new Window(), fails = new Window();
   const salt = crypto.randomBytes(8).toString('hex');
   let inFlight = 0, localInFlight = 0;
+  // NOTE: list only genuinely different models. Aliases such as gemini-flash-lite-latest share the quota of the model they point to (measured: Google's
+  // refusal named gemini-3.5-flash-lite), so they add no capacity. Bigger models go last: they have their own allowance but are slower and more often overloaded.
+  // Gemini free tier allows only ~15 requests/minute PER MODEL, so we spread across several equivalent models, stay under that
+  // ourselves, and leave a model alone for a while after Google refuses it.
+  const gemCool = new Map();        // model -> time it may be used again
+  const gemPace = new Window();     // our own per-model requests-per-minute counter
+  async function callGeminiPool(system, msgs) {
+    let soonest = Infinity, last;
+    for (const m of cfg.geminiModels) {
+      const now = Date.now(), cool = gemCool.get(m) || 0;
+      if (cool > now) { soonest = Math.min(soonest, cool - now); continue; }
+      const wait = gemPace.check('m:' + m, cfg.geminiRpm, 60_000, now);
+      if (wait > 0) { soonest = Math.min(soonest, wait); continue; }
+      gemPace.add('m:' + m, now);
+      const ac = new AbortController(), t = setTimeout(() => ac.abort(), cfg.geminiTryMs);
+      let out, err;
+      try { out = await callUpstream({ ...cfg, geminiModel: m }, 'gemini', system, msgs, ac.signal, { retry5xx: false }); } catch (e) { err = e; } finally { clearTimeout(t); }
+      if (!err && !out.status) return { out, model: m };
+      const st = err ? 0 : out.status;
+      let ms = 20_000;                                                         // timeout, network error, 5xx: try again soon
+      if (st === 404) ms = 3_600_000;                                          // retired, or not offered to this key
+      else if (st === 429) ms = out.info?.daily ? msUntilPacificMidnight() : Math.min(Math.max(out.info?.retryMs ?? 60_000, 5_000), 600_000);
+      else if (st === 400 || st === 401 || st === 403) ms = 600_000;           // a key or permission problem: do not hammer Google
+      gemCool.set(m, Date.now() + ms); soonest = Math.min(soonest, ms); last = { status: st };
+    }
+    return { exhausted: true, retryMs: Number.isFinite(soonest) ? soonest : 60_000, last };
+  }
   // Is the local AI reachable? Cached, so a sleeping Mac costs one quick check, not a wait on every request.
   let pState = { up: true, at: 0 };
   const markPrimary = (up) => { pState = { up, at: Date.now() }; };
@@ -213,7 +264,7 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
 
   const server = http.createServer(async (req, res) => {
     const t0 = Date.now();
-    let who = '-', ipHash = '-', status = 0, held = false, upNote = '', via = '';
+    let who = '-', ipHash = '-', status = 0, held = false, upNote = '', via = '', modelNote = '';
     const origin = req.headers.origin;
     const send = (code, obj, extra = {}) => {
       status = code;
@@ -223,7 +274,7 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       res.writeHead(code, h); res.end(body);
     };
     res.on('close', () => { if (held) { inFlight--; held = false; } });
-    res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${(req.url || '').split('?')[0]} who=${who} ip=${ipHash} status=${status}${via ? ' via=' + via : ''}${upNote} ms=${Date.now() - t0}`));
+    res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${(req.url || '').split('?')[0]} who=${who} ip=${ipHash} status=${status}${via ? ' via=' + via : ''}${modelNote}${upNote} ms=${Date.now() - t0}`));
     try {
       const path = (req.url || '').split('?')[0];
       const remote = req.socket.remoteAddress || '';
@@ -263,7 +314,7 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
 
       // limits: checked AND reserved in one synchronous step (no await in between), so concurrent requests cannot overshoot.
       // The reservation is handed back if the request turns out to be invalid or the AI fails (see refund()).
-      const now = Date.now(), primary = cfg.upstream === 'auto' ? 'qwen' : cfg.upstream;   // limits follow the AI that normally answers
+      const now = Date.now(), primary = cfg.upstream === 'auto' ? (cfg.autoPrimary === 'gemini' ? 'gemini' : 'qwen') : cfg.upstream;   // limits follow the AI that normally answers
       // The checks for one AI. pfx keeps the Gemini backup's counters separate from the main AI's.
       const buildChecks = (u, pfx) => guest ? [
         [global, pfx + 'guest-all', pfx ? cfg.guestGlobalGeminiDay : cfg.guestGlobalDay, DAY, 'All of today\'s free builds for everyone are used up'],
@@ -306,26 +357,42 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       // A person who picked Gemini in the app (and has no key of their own) asks for it by name: skip the Mac entirely.
       const preferGemini = cfg.upstream === 'auto' && String(req.headers['x-dbb-prefer'] || '') === 'gemini';
       let out, err, undoFallback = () => {}, used = primary;
-      if (cfg.upstream === 'auto') {
-        // local AI first; Gemini takes over by itself when the local one is off, slow, or failing
-        // The Mac handles only a couple of requests well at once; more kids than that go straight to Gemini instead of queueing.
-        // The slot is taken BEFORE any await, so many simultaneous requests cannot all slip past the cap.
-        if (!preferGemini && localInFlight < cfg.maxLocalInFlight) {
-          localInFlight++;
-          try {
-            if (await primaryUp()) {
-              try { out = await callLocalStreaming(cfg, v.system, v.msgs, { firstMs: cfg.autoFirstTokenMs, totalMs: cfg.autoPrimaryMs }); } catch (e) { err = e; }
-              if (err || out.status) markPrimary(false);
-            }
-          } finally { localInFlight--; }
+      const runLocal = async () => {                       // the Mac: only a couple at once, must start answering quickly
+        if (localInFlight >= cfg.maxLocalInFlight) return;
+        localInFlight++;                                   // the slot is taken BEFORE any await
+        try {
+          if (await primaryUp()) {
+            try { out = await callLocalStreaming(cfg, v.system, v.msgs, { firstMs: cfg.autoFirstTokenMs, totalMs: cfg.autoPrimaryMs }); } catch (e) { err = e; }
+            if (err || out.status) markPrimary(false);
+          }
+        } finally { localInFlight--; }
+      };
+      let poolWait = 0;
+      if (cfg.upstream === 'auto' && cfg.autoPrimary === 'gemini') {
+        // GEMINI FIRST: a pool of Gemini models, paced under Google's limits. The Mac is the safety net if Gemini is unavailable.
+        const r = await callGeminiPool(v.system, v.msgs);
+        if (r.out) { out = r.out; used = 'gemini'; modelNote = ' m=' + r.model; }
+        else {
+          poolWait = r.retryMs; upNote = r.last?.status === 401 || r.last?.status === 403 || r.last?.status === 400 ? ` up=gemini-key-${r.last.status}` : ' up=gemini-pool-exhausted';
+          const fb = reserve(buildChecks('qwen', 'L:'), Date.now());
+          if (fb.ok) {
+            await runLocal();
+            if (!err && out && !out.status) { refund(); undoFallback = () => {}; used = 'qwen'; }          // the Mac answered: Gemini allowance is not spent
+            else { fb.undo(); out = undefined; err = undefined; }
+          }
+          if (!out) { refund(); const secs = Math.max(5, Math.ceil(poolWait / 1000)); return send(429, { error: `Lots of people are building right now, and the free AI needs a short rest. Please try again in about ${secs < 90 ? secs + ' seconds' : waitText(poolWait)}.` }, { 'retry-after': String(Math.min(secs, 600)) }); }
         }
+      } else if (cfg.upstream === 'auto') {
+        // LOCAL FIRST: the Mac, then Gemini (the pool) when it is off, slow, or failing
+        if (!preferGemini) await runLocal();
         if (err || !out || out.status) {
           upNote = preferGemini ? ' up=chose-gemini' : err ? ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr'}` : out ? ` up=${out.status}` : ' up=down';
           const fb = reserve(buildChecks('gemini', 'G:'), Date.now());
           if (!fb.ok) { refund(); return send(429, { error: preferGemini ? `${fb.msg}. Please try again in ${waitText(fb.wait)}.` : `The main AI is resting right now and today's backup allowance is used up (${fb.msg.charAt(0).toLowerCase() + fb.msg.slice(1)}). Please try again in ${waitText(fb.wait)}.` }, { 'retry-after': String(Math.ceil(fb.wait / 1000)) }); }
           undoFallback = fb.undo; used = 'gemini'; err = undefined; out = undefined;
-          try { out = await callOne('gemini', cfg.autoFallbackMs); } catch (e) { err = e; }
-          if (!err && !out.status) refund();            // Gemini answered, so the main AI's allowance is not spent
+          const r = await callGeminiPool(v.system, v.msgs);
+          if (r.out) { out = r.out; modelNote = ' m=' + r.model; refund(); }                // Gemini answered, so the main AI's allowance is not spent
+          else out = { status: 429 };
         }
       } else { try { out = await callOne(cfg.upstream, cfg.timeoutMs); } catch (e) { err = e; } }
       if (err || out.status) {
@@ -335,10 +402,10 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
           if (err.name === 'AbortError') return send(504, { error: 'The AI took too long to answer. Please try again.' });
           return send(502, { error: 'The shared server could not reach the AI. Please try again in a moment.' });
         }
-        upNote = ` up=${out.status}`;
+        upNote = upNote || ` up=${out.status}`;
         return send(502, { error: out.status === 429 ? 'The AI behind the shared server is busy or out of quota. Please try again later.' : 'The AI behind the shared server had a problem. Please try again in a moment.' });
       }
-      via = used; if (used === primary && cfg.upstream === 'auto') markPrimary(true);
+      via = used; if (used === primary && cfg.upstream === 'auto' && cfg.autoPrimary !== 'gemini') markPrimary(true);
       return send(200, { text: out.text });
     } catch {
       if (!res.headersSent) send(500, { error: 'Something went wrong on the shared server.' });
