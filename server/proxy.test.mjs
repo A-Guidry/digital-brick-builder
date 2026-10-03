@@ -17,6 +17,11 @@ async function startUpstream(mode = 'ok') {
       if (mode === 'flaky') { if (seen.length === 1) { res.writeHead(503); return res.end('busy'); } }
       if (mode === 'quota') { res.writeHead(429); return res.end('quota'); }
       if (mode === 'hang') return; // never answer
+      if (body.stream === true && req.url.includes('/chat/completions')) {      // the real local AI streams
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { role: 'assistant', content: 'qwen-' } }] }) + '\n\n');
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'reply' } }] }) + '\n\n'); res.write('data: [DONE]\n\n'); return res.end();
+      }
       res.writeHead(200, { 'content-type': 'application/json' });
       if (req.url.includes('/v1/messages')) res.end(JSON.stringify({ content: [{ type: 'text', text: 'anthropic-reply' }] }));
       else if (req.url.includes(':generateContent')) res.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'gemini-reply' }] } }] }));
@@ -425,4 +430,100 @@ test('auto needs both the local AI and Gemini configured', () => {
   assert.throws(() => loadConfig(base), /QWEN_BASE_URL is required/);
   assert.throws(() => loadConfig(base), /GEMINI_API_KEY is required/);
   assert.doesNotThrow(() => loadConfig({ ...base, QWEN_BASE_URL: 'http://x/v1', QWEN_MODEL: 'm', GEMINI_API_KEY: 'k' }));
+});
+
+// ---------- ADVERSARIAL: how the local-first mode behaves when the Mac is slow, stalls, or the house is full of kids ----------
+/** A local AI that STREAMS like Ollama and can misbehave. mode: ok | cold (long wait before the first token) | stall (one token then silence) | steady (slow but alive) | blackhole (accepts, never answers) */
+async function startStreamingLocal(mode = 'ok') {
+  const seen = []; let active = 0, peak = 0;
+  const srv = http.createServer((req, res) => {
+    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => {
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      seen.push({ url: req.url, body });
+      if (req.url === '/gateway/health') { if (mode === 'blackhole') return; res.writeHead(200, { 'content-type': 'application/json' }); return res.end('{"ok":true}'); }
+      if (mode === 'blackhole') return;
+      active++; peak = Math.max(peak, active); res.on('close', () => { active--; });
+      const sse = (obj) => res.write('data: ' + JSON.stringify(obj) + '\n\n');
+      if (!body.stream) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ choices: [{ message: { content: 'local-nonstream' } }] })); }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const start = (delay) => setTimeout(() => {
+        sse({ choices: [{ delta: { role: 'assistant', reasoning: 'thinking…' } }] });
+        if (mode === 'stall') return;                                        // goes quiet forever
+        const parts = mode === 'steady' ? ['lo', 'cal', '-', 'stream', 'ed'] : ['local-streamed'];
+        parts.forEach((p, i) => setTimeout(() => { sse({ choices: [{ delta: { content: p } }] }); if (i === parts.length - 1) { res.write('data: [DONE]\n\n'); res.end(); } }, mode === 'steady' ? 120 * (i + 1) : 0));
+      }, delay);
+      start(mode === 'cold' ? 1500 : 0);
+    });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  return { seen, peak: () => peak, url: `http://127.0.0.1:${srv.address().port}`, close: () => new Promise(r => { srv.closeAllConnections?.(); srv.close(r); }) };
+}
+async function startAutoStream({ local = 'ok', gemini = 'ok', env = {} } = {}) {
+  const q = await startStreamingLocal(local), g = await startUpstream(gemini), logs = [];
+  const cfg = loadConfig({ UPSTREAM: 'auto', PASSCODES: `ann:${CODE}`, ALLOWED_ORIGINS: SITE, OPEN_ACCESS: '1', QWEN_BASE_URL: q.url + '/v1', QWEN_MODEL: 'qwen-test',
+    GEMINI_API_KEY: SECRET_KEY, GEMINI_BASE_URL: g.url, AUTO_FIRST_TOKEN_MS: '400', AUTO_PRIMARY_TIMEOUT_MS: '3000', AUTO_FALLBACK_TIMEOUT_MS: '3000', ...env });
+  const proxy = createProxy(cfg, { log: l => logs.push(l) });
+  await new Promise(r => proxy.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${proxy.address().port}`;
+  const kid = (n, extra = {}) => fetch(base + '/v1/ai', { method: 'POST', headers: { 'content-type': 'application/json', origin: SITE, 'x-dbb-guest': 'adversarial-kid-id-' + String(n).padStart(4, '0'), 'x-forwarded-for': '203.0.113.' + (n % 200 + 1), ...extra }, body: JSON.stringify(REQ) });
+  return { kid, q, g, logs, close: async () => { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); await q.close(); await g.close(); } };
+}
+const timed = async (p) => { const t = Date.now(); const r = await p; return { r, ms: Date.now() - t }; };
+
+test('ADVERSARIAL a local AI that is slow to start (cold or busy): the kid is NOT made to wait out the long timeout', async () => {
+  const s = await startAutoStream({ local: 'cold' });
+  try {
+    const { r, ms } = await timed(s.kid(1)); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' });
+    assert.ok(ms < 1400, `waited ${ms}ms; should switch to Gemini after the first-token wait (400ms), not the 3000ms total`);
+  } finally { await s.close(); }
+});
+test('ADVERSARIAL a local AI that answers one token then goes silent: falls back at the total limit and still answers', async () => {
+  const s = await startAutoStream({ local: 'stall' });
+  try { const { r, ms } = await timed(s.kid(2)); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' }); assert.ok(ms < 6000); } finally { await s.close(); }
+});
+test('ADVERSARIAL a local AI that is slow but ALIVE (tokens keep coming) is allowed to finish, even past the first-token wait', async () => {
+  const s = await startAutoStream({ local: 'steady' });
+  try { const r = await s.kid(3); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'local-streamed' }); assert.equal(s.g.seen.length, 0); } finally { await s.close(); }
+});
+test('ADVERSARIAL the local AI is asked in streaming mode and an ordinary healthy answer is assembled correctly', async () => {
+  const s = await startAutoStream({ local: 'ok' });
+  try { const r = await s.kid(4); assert.deepEqual(await r.json(), { text: 'local-streamed' }); assert.equal(s.q.seen.find(x => x.url.includes('chat')).body.stream, true); } finally { await s.close(); }
+});
+test('ADVERSARIAL a Mac that has gone silent (packets dropped: accepts but never answers): the kid still gets an answer quickly', async () => {
+  const s = await startAutoStream({ local: 'blackhole' });
+  try { const { r, ms } = await timed(s.kid(5)); assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' }); assert.ok(ms < 4500, `took ${ms}ms`); } finally { await s.close(); }
+});
+test('ADVERSARIAL twelve kids at once: nobody is told "busy"; the Mac is never asked to do more than it can, the rest go to Gemini', async () => {
+  const s = await startAutoStream({ local: 'ok', env: { MAX_LOCAL_IN_FLIGHT: '2' } });
+  try {
+    const all = await Promise.all(Array.from({ length: 12 }, (_, i) => s.kid(10 + i)));
+    const codes = all.map(r => r.status);
+    assert.deepEqual(codes.filter(c => c !== 200), [], `statuses: ${codes.join(',')}`);
+    assert.ok(s.q.peak() <= 2, `the Mac was given ${s.q.peak()} requests at once`);
+  } finally { await s.close(); }
+});
+test('ADVERSARIAL malformed streaming data from the local AI cannot crash the server or leak into the answer', async () => {
+  const srv = http.createServer((req, res) => { const c = []; req.on('data', x => c.push(x)); req.on('end', () => {
+    if (req.url === '/gateway/health') { res.writeHead(200); return res.end('{}'); }
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {not json\n\n: comment line\n\nevent: ping\n\ndata: {"choices":[]}\n\ndata: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'); res.end(); }); });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const g = await startUpstream('ok'); const logs = [];
+  const cfg = loadConfig({ UPSTREAM: 'auto', PASSCODES: `ann:${CODE}`, ALLOWED_ORIGINS: SITE, OPEN_ACCESS: '1', QWEN_BASE_URL: `http://127.0.0.1:${srv.address().port}/v1`, QWEN_MODEL: 'm', GEMINI_API_KEY: SECRET_KEY, GEMINI_BASE_URL: g.url });
+  const proxy = createProxy(cfg, { log: l => logs.push(l) }); await new Promise(r => proxy.listen(0, '127.0.0.1', r));
+  try {
+    const r = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/ai`, { method: 'POST', headers: { 'content-type': 'application/json', origin: SITE, 'x-dbb-guest': 'malformed-stream-test-id-1' }, body: JSON.stringify(REQ) });
+    assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'ok' });
+  } finally { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); srv.closeAllConnections?.(); srv.close(); await g.close(); }
+});
+test('ADVERSARIAL a local AI that returns an empty stream is treated as failed, not as an empty answer', async () => {
+  const srv = http.createServer((req, res) => { req.resume(); req.on('end', () => { if (req.url === '/gateway/health') { res.writeHead(200); return res.end('{}'); } res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: [DONE]\n\n'); }); });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const g = await startUpstream('ok');
+  const cfg = loadConfig({ UPSTREAM: 'auto', PASSCODES: `ann:${CODE}`, ALLOWED_ORIGINS: SITE, OPEN_ACCESS: '1', QWEN_BASE_URL: `http://127.0.0.1:${srv.address().port}/v1`, QWEN_MODEL: 'm', GEMINI_API_KEY: SECRET_KEY, GEMINI_BASE_URL: g.url });
+  const proxy = createProxy(cfg, { log: () => {} }); await new Promise(r => proxy.listen(0, '127.0.0.1', r));
+  try {
+    const r = await fetch(`http://127.0.0.1:${proxy.address().port}/v1/ai`, { method: 'POST', headers: { 'content-type': 'application/json', origin: SITE, 'x-dbb-guest': 'empty-stream-test-id-0001' }, body: JSON.stringify(REQ) });
+    assert.equal(r.status, 200); assert.deepEqual(await r.json(), { text: 'gemini-reply' });
+  } finally { proxy.closeAllConnections?.(); await new Promise(r => proxy.close(r)); srv.closeAllConnections?.(); srv.close(); await g.close(); }
 });

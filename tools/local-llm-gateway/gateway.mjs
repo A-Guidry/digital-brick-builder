@@ -41,7 +41,7 @@ export function createGateway(cfg, { log = () => {} } = {}) {
 
     if (origin && !originAllowed(cfg, origin)) return reply(403, { error: 'This website is not allowed to use this gateway.' });
     if (req.url === '/gateway/health') {
-      return probe(cfg).then(ok => reply(ok ? 200 : 503, { ok, upstream: cfg.upstream.origin }), () => reply(503, { ok: false }));
+      return probe(cfg).then(ok => reply(ok ? 200 : 503, { ok, upstream: cfg.upstream.origin, ...(cfg.warmModel ? { warm: cfg.warmModel } : {}) }), () => reply(503, { ok: false }));
     }
     if (req.method === 'OPTIONS') {
       return reply(204, '', {

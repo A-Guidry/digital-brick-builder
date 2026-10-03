@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { complete, testConnection, isConfigured, clearKeys, loadSettings, saveSettings, missingSetting, listLocalModels, passcodeFromHash, DEFAULTS, Settings } from '../src/llm';
+import { complete, testConnection, isConfigured, clearKeys, loadSettings, saveSettings, missingSetting, listLocalModels, passcodeFromHash, detectLocalServer, LOCAL_CANDIDATES, pickChatModel, gatewayWarmModel, DEFAULTS, Settings } from '../src/llm';
 
 const shared = (over: Partial<Settings> = {}): Settings => ({ ...DEFAULTS, provider: 'shared', sharedUrl: 'https://proxy.example/', sharedPasscode: ' secret-code ', ...over });
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
@@ -53,7 +53,9 @@ describe('shared server provider', () => {
   });
   it('falls back to a plain message when the error body is not JSON, and explains network failures', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>bad gateway</html>', { status: 502 })));
-    await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/shared server had a problem \(502\)/);
+    await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/restarting or busy/);   // a web page from nginx, not our JSON
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html>teapot</html>', { status: 418 })));
+    await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/shared server had a problem \(418\)/);
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/Could not reach the shared server/);
   });
@@ -148,5 +150,86 @@ describe('setup links', () => {
   });
   it('ignores everything that is not a setup link, including share links and junk', () => {
     for (const h of ['', '#', '#s=abc123', '#pc=', '#pc=short', '#pc=has space here1', '#pc=%E0%A4%A', '#pc=ok-code-12345&x=1', '#x=#pc=ok-code-12345', '#pc=' + 'a'.repeat(201)]) expect(passcodeFromHash(h), h).toBeNull();
+  });
+});
+
+describe('finding the local server by itself', () => {
+  const answer = (map: Record<string, { status: number; body?: unknown } | 'throw'>) => vi.fn().mockImplementation((url: string) => {
+    const hit = Object.entries(map).find(([k]) => String(url).startsWith(k));
+    if (!hit || hit[1] === 'throw') return Promise.reject(new TypeError('Failed to fetch'));
+    return Promise.resolve(json(hit[1].status, hit[1].body ?? {}));
+  });
+  it('skips a server that refuses the website and picks the one that accepts it', async () => {
+    vi.stubGlobal('fetch', answer({
+      'http://localhost:11434/v1': { status: 403 },                              // the saved address: the PAIR proxy refuses websites
+      'http://127.0.0.1:11436/v1': { status: 200, body: { data: [{ id: 'qwen3.5:9b' }, { id: 'nomic-embed-text:latest' }] } },
+    }));
+    const hit = await detectLocalServer(loc());
+    expect(hit).toEqual({ url: 'http://127.0.0.1:11436/v1', models: ['qwen3.5:9b', 'nomic-embed-text:latest'] });
+  });
+  it('keeps the saved address when it works, and tries the saved one first', async () => {
+    const f = answer({ 'http://my.server/v1': { status: 200, body: { data: [{ id: 'm' }] } }, 'http://127.0.0.1:11436/v1': { status: 200, body: { data: [{ id: 'other' }] } } });
+    vi.stubGlobal('fetch', f);
+    expect((await detectLocalServer(loc({ localUrl: 'http://my.server/v1/' })))?.url).toBe('http://my.server/v1');
+    expect(String(f.mock.calls[0][0])).toBe('http://my.server/v1/models');
+  });
+  it('returns null when nothing answers, and only ever asks the usual places', async () => {
+    const f = answer({}); vi.stubGlobal('fetch', f);
+    expect(await detectLocalServer(loc({ localUrl: 'http://localhost:11434/v1' }))).toBeNull();
+    const asked = f.mock.calls.map(c => String(c[0]).replace('/models', ''));
+    expect(asked).toEqual([...new Set(['http://localhost:11434/v1', ...LOCAL_CANDIDATES])]);   // no duplicates, nothing else
+  });
+});
+
+describe('adversarial: the local-server finder must not do surprising things', () => {
+  it('NEVER replaces an address the person typed with a different server, even if that address is down', async () => {
+    const f = vi.fn().mockImplementation((u: string) => String(u).startsWith('http://127.0.0.1:11436') ? Promise.resolve(json(200, { data: [{ id: 'x' }] })) : Promise.reject(new TypeError('Failed to fetch')));
+    vi.stubGlobal('fetch', f);
+    expect(await detectLocalServer(loc({ localUrl: 'http://my-own-box.lan:9000/v1' }))).toBeNull();
+    expect(f.mock.calls.map(c => String(c[0]))).toEqual(['http://my-own-box.lan:9000/v1/models']);   // it asked ONLY the typed address
+  });
+  it('treats the usual defaults (any of them) as "not chosen by the person" and may look at the others', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((u: string) => String(u).startsWith('http://127.0.0.1:11436') ? Promise.resolve(json(200, { data: [{ id: 'm' }] })) : Promise.resolve(json(403, {}))));
+    for (const u of ['http://localhost:11434/v1', 'http://localhost:11435/v1', 'http://127.0.0.1:11436/v1', '']) expect((await detectLocalServer(loc({ localUrl: u })))?.url, u).toBe('http://127.0.0.1:11436/v1');
+  });
+  it('a hostile or broken /models answer cannot crash it', async () => {
+    for (const body of [null, 'not json at all', { data: 'nope' }, { data: [null, 5, {}] }]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(typeof body === 'string' ? new Response(body, { status: 200 }) : json(200, body)));
+      await expect(detectLocalServer(loc({ localUrl: 'http://localhost:11434/v1' }))).resolves.toSatisfy((v: any) => v === null || Array.isArray(v.models));
+    }
+  });
+  it('never auto-picks an embedding model (it cannot chat) and prefers the one the server keeps loaded', () => {
+    const real = ['qwen3.5-fazm:latest', 'qwen3.6-fazm:latest', 'qwen3.6:latest', 'qwen3.5:9b', 'nomic-embed-text:latest'];   // the owner's real list
+    expect(pickChatModel(real, 'qwen3.5:9b')).toBe('qwen3.5:9b');
+    expect(pickChatModel(real)).toBe('qwen3.5-fazm:latest');
+    expect(pickChatModel(['nomic-embed-text:latest', 'bge-reranker'])).toBeUndefined();
+    expect(pickChatModel(['nomic-embed-text:latest', 'llama3'])).toBe('llama3');
+    expect(pickChatModel(real, 'not-in-the-list')).toBe('qwen3.5-fazm:latest');
+  });
+  it('asks the gateway which model is warm, and shrugs if it is not a gateway', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, { ok: true, warm: 'qwen3.5:9b' })));
+    expect(await gatewayWarmModel('http://127.0.0.1:11436/v1')).toBe('qwen3.5:9b');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('nope', { status: 404 })));
+    expect(await gatewayWarmModel('http://localhost:11434/v1')).toBeUndefined();
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('x')));
+    expect(await gatewayWarmModel('http://localhost:11434/v1')).toBeUndefined();
+  });
+});
+
+describe('adversarial: the server (or nginx in front of it) answers with something that is not our JSON', () => {
+  const html = (status: number) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('<html><body><h1>' + status + '</h1></body></html>', { status, headers: { 'content-type': 'text/html' } })));
+  it('413 from nginx: says the picture is too big, never "try again in a moment"', async () => {
+    html(413);
+    const err = (await complete(shared(), 's', [{ role: 'user', text: 'x' }]).catch(e => e)) as Error;
+    expect(err.message).toMatch(/too big/i); expect(err.message).not.toMatch(/try again in a moment/i); expect(err.message).not.toMatch(/<html/);
+  });
+  it('502 / 503 / 504 from nginx: says the shared AI is restarting or busy, with no HTML in the message', async () => {
+    for (const st of [502, 503, 504]) { html(st); const err = (await complete(shared(), 's', [{ role: 'user', text: 'x' }]).catch(e => e)) as Error; expect(err.message, String(st)).toMatch(/restarting|busy|unavailable/i); expect(err.message).not.toMatch(/<h1>/); }
+  });
+  it('a 200 that is not JSON, or JSON with no text, becomes a clear error and not "undefined" or an empty build', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('hello', { status: 200 })));
+    await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/did not understand|unexpected|problem/i);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json(200, { nothing: true })));
+    await expect(complete(shared(), 's', [{ role: 'user', text: 'x' }])).rejects.toThrow(/no answer|empty|problem/i);
   });
 });

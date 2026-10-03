@@ -77,6 +77,46 @@ const netHint = (e: unknown, what: string) => {
     : 'Check your network connection.'));
 };
 
+/** Places a local model server is usually found, best first. The gateway (11436) is listed first because it accepts websites; plain Ollama and the PAIR proxy often do not. */
+export const LOCAL_CANDIDATES = ['http://127.0.0.1:11436/v1', 'http://localhost:11434/v1', 'http://localhost:11435/v1'];
+
+/** Finds a local server that really answers this website. Only when the saved address is one of the usual defaults:
+ *  an address the person typed themselves is respected, never swapped for a different server. A server that refuses the
+ *  website (403) or is not there does not count. Returns its address and models, or null. */
+export async function detectLocalServer(s: Settings): Promise<{ url: string; models: string[] } | null> {
+  const norm = (u: string) => u.trim().replace(/\/+$/, '');
+  const saved = norm(s.localUrl);
+  const isDefault = !saved || LOCAL_CANDIDATES.includes(saved);
+  const urls = (isDefault ? [saved, ...LOCAL_CANDIDATES] : [saved]).filter((u, i, a) => u && a.indexOf(u) === i);
+  for (const url of urls) {
+    try {
+      const r = await fetch(`${url}/models`, { signal: AbortSignal.timeout(4000) });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const models: string[] = (j.data ?? j.models ?? []).map((m: any) => String(m.id ?? m.name ?? '')).filter(Boolean);
+      return { url, models };
+    } catch { /* not here, or blocked: try the next */ }
+  }
+  return null;
+}
+
+/** Which installed model to use when the saved one is missing: never an embedding model (they cannot chat),
+ *  and prefer the one the server keeps loaded (the gateway reports it) so the first request is not a cold start. */
+export function pickChatModel(models: string[], warm?: string): string | undefined {
+  const chat = models.filter(m => !/embed|rerank/i.test(m));
+  return (warm && chat.includes(warm) ? warm : chat[0]) ?? undefined;
+}
+
+/** The model a gateway keeps loaded, if this server is one (GET /gateway/health at the server's origin). */
+export async function gatewayWarmModel(url: string): Promise<string | undefined> {
+  try {
+    const r = await fetch(new URL('/gateway/health', url), { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return undefined;
+    const j = await r.json();
+    return typeof j.warm === 'string' && j.warm ? j.warm : undefined;
+  } catch { return undefined; }
+}
+
 /** Models the local server says it has (OpenAI-compatible GET /models). */
 export async function listLocalModels(s: Settings): Promise<string[]> {
   const base = s.localUrl.trim().replace(/\/+$/, '');
@@ -106,10 +146,14 @@ async function completeShared(s: Settings, system: string, msgs: Msg[], signal?:
   } catch (e) { throw netHint(e, 'the shared server'); }
   if (!r.ok) {
     let msg = ''; try { msg = String((await r.json()).error ?? ''); } catch { /* not JSON */ }
+    // nginx (in front of the server) answers some problems with a web page instead of our JSON: say what actually happened
+    if (!msg && r.status === 413) msg = 'That picture is too big to send. Try a smaller one, or take it again at a lower quality.';
+    if (!msg && (r.status === 502 || r.status === 503 || r.status === 504)) msg = 'The shared AI is restarting or busy right now. Please try again in a minute.';
     throw new Error(msg || `The shared server had a problem (${r.status}). Try again in a moment.`);
   }
-  const j = await r.json();
-  return typeof j.text === 'string' ? j.text : '';
+  let j: any; try { j = await r.json(); } catch { throw new Error('The shared server sent back something unexpected. Please try again in a moment.'); }
+  if (typeof j?.text !== 'string' || !j.text.trim()) throw new Error('The shared AI sent back no answer. Please try again.');
+  return j.text;
 }
 
 export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal): Promise<string> {

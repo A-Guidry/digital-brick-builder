@@ -253,6 +253,16 @@ async function mockProxy(page, replies, seen) {
   check('guest: the same browser keeps the same id', seen.length === 2 && seen[1].headers['x-dbb-guest'] === id1);
   await p.context().close();
 }
+{ // C6e a picture the browser cannot read (corrupt, or a type it cannot decode): a clear message, no crash, still usable
+  const p = await fresh(null);
+  await p.setInputFiles('#file', { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('this is not really a picture') });
+  await p.waitForTimeout(600);
+  const r = await p.evaluate(() => ({ note: document.getElementById('ai-note').textContent, imgShown: !document.getElementById('drop-img').hidden, go: document.getElementById('go').disabled }));
+  check('picture: an unreadable picture gets a clear message', /could not read|can't read|cannot read|try a different/i.test(r.note), r.note);
+  check('picture: ...it is not shown as attached, and Generate still works', !r.imgShown && !r.go);
+  check('picture: ...and nothing crashed', p.errors.length === 0, p.errors.join('|'));
+  await p.context().close();
+}
 { // C6b shared server: first-time default, passcode flow, friendly limit message, no passcode in profile file
   const seen = []; const p = await fresh(null);
   check('shared: first-time visitors start on "Shared server", ready to go, no passcode asked', await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1') || '{"provider":"shared"}').provider) === 'shared' && /AI: shared server/.test(await p.locator('#ai-note').innerText()) && !/passcode/i.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
@@ -306,6 +316,27 @@ async function mockProxy(page, replies, seen) {
   check('setup link: no page errors', p.errors.length === 0, p.errors.join('|'));
   await ctx.close();
 }
+{ // C9b local model, zero typing: the saved address is the PAIR proxy (refuses websites); the app finds the gateway by itself
+  const p = await fresh({ provider: 'local', localUrl: 'http://localhost:11434/v1', localModel: 'llama3.2-vision' });
+  const seen = [];
+  await p.route('http://localhost:11434/**', route => route.fulfill({ status: 403, headers: cors, contentType: 'text/plain', body: 'Forbidden' }));
+  await p.route('http://127.0.0.1:11436/**', route => {
+    const req = route.request(), url = req.url();
+    if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    // the real gateway's list starts with an embedding model and a decoy: the app must pick the one the gateway keeps loaded
+    if (url.endsWith('/models')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ data: [{ id: 'nomic-embed-text:latest' }, { id: 'qwen3.5-fazm:latest' }, { id: 'qwen3.5:9b' }] }) });
+    if (url.endsWith('/gateway/health')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ ok: true, warm: 'qwen3.5:9b' }) });
+    if (req.method() !== 'POST') return route.fulfill({ status: 404, headers: cors, body: '' });
+    seen.push(JSON.parse(req.postData()));
+    route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: '```json\n' + JSON.stringify(BOAT) + '\n```' } }] }) });
+  });
+  await p.fill('#prompt', 'a small blue boat'); await p.click('#go'); await idle(p);
+  const st = await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1')));
+  check('local: Generate finds the working local server by itself (no typing, no dialog)', st.localUrl === 'http://127.0.0.1:11436/v1' && seen.length === 1 && await p.locator('#settings[open]').count() === 0, JSON.stringify({ url: st.localUrl, calls: seen.length }));
+  check('local: ...and swaps the missing model for the one the gateway keeps loaded (not the embedding model, not the decoy)', st.localModel === 'qwen3.5:9b' && seen[0]?.model === 'qwen3.5:9b', `${st.localModel} / ${seen[0]?.model}`);
+  check('local: ...and the build appears', (await p.evaluate(() => window.__bf.model?.name)) === 'Boat');
+  await p.context().close();
+}
 { // C7 gemini
   const seen = []; const p = await fresh({ provider: 'gemini', geminiKey: 'AIza-TEST', geminiModel: 'gemini-3.5-flash-lite' });
   await p.route('https://generativelanguage.googleapis.com/**', async route => {
@@ -324,6 +355,7 @@ async function mockProxy(page, replies, seen) {
   await p.route('http://localhost:11434/**', async route => {
     const req = route.request();
     if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+    if (req.method() === 'GET' && req.url().endsWith('/models')) return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ data: [{ id: 'llava' }] }) });
     seen.push({ url: req.url(), body: JSON.parse(req.postData()) });
     route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ choices: [{ message: { content: JSON.stringify(BOAT) } }] }) });
   });
@@ -334,7 +366,9 @@ async function mockProxy(page, replies, seen) {
 }
 { // C9 local server down -> plain error
   const p = await fresh({ provider: 'local', localUrl: 'http://localhost:9/v1', localModel: 'x' });
+  const touched = []; await p.route(/127\.0\.0\.1:1143[456]|localhost:1143[456]/, r => { touched.push(r.request().url()); r.abort(); });
   await p.fill('#prompt', 'boat'); await p.click('#go'); await idle(p);
+  check('ai/local-down: a typed address is respected; no other local server is probed or used', touched.length === 0 && (await p.evaluate(() => JSON.parse(localStorage.getItem('brickforge.settings.v1')).localUrl)) === 'http://localhost:9/v1', touched.join(','));
   check('ai/local-down: plain error mentions server/CORS', /local model server/.test(await p.locator('#ai-note').innerText()), await p.locator('#ai-note').innerText());
   await p.context().close();
 }

@@ -53,18 +53,19 @@ export function loadConfig(env) {
   if (upstream === 'qwen' || upstream === 'auto') { need('QWEN_BASE_URL'); need('QWEN_MODEL'); }
   const cfg = {
     upstream, passcodes, origins, perDay, perHour, globalDay,
+    autoFirstTokenMs: int(env.AUTO_FIRST_TOKEN_MS, 12_000), maxLocalInFlight: int(env.MAX_LOCAL_IN_FLIGHT, 2),
     autoPrimaryMs: int(env.AUTO_PRIMARY_TIMEOUT_MS, 60_000), autoFallbackMs: int(env.AUTO_FALLBACK_TIMEOUT_MS, 50_000), guestGlobalGeminiDay: int(env.GUEST_GLOBAL_GEMINI_DAY, 60),
     openAccess: env.OPEN_ACCESS === '1', guestGlobalDay: int(env.GUEST_GLOBAL_DAY, 150), guestIpDay: int(env.GUEST_IP_DAY, 40),
     host: env.HOST || '127.0.0.1', port: int(env.PORT, 8787),
     maxBodyBytes: int(env.MAX_BODY_BYTES, 1_000_000), maxTokens: int(env.MAX_TOKENS, 4096),
-    timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, 3),
+    timeoutMs: int(env.UPSTREAM_TIMEOUT_MS, 90_000), maxInFlight: int(env.MAX_IN_FLIGHT, upstream === 'auto' ? 12 : 3),
     anthropicKey: env.ANTHROPIC_API_KEY || '', anthropicModel: env.ANTHROPIC_MODEL || 'claude-sonnet-4-5',
     anthropicBase: (env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, ''),
     geminiKey: env.GEMINI_API_KEY || '', geminiModel: env.GEMINI_MODEL || 'gemini-3.5-flash-lite',
     geminiBase: (env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com').replace(/\/+$/, ''),
     qwenBase: (env.QWEN_BASE_URL || '').replace(/\/+$/, ''), qwenModel: env.QWEN_MODEL || '', qwenKey: env.QWEN_API_KEY || '',
   };
-  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight', 'guestGlobalDay', 'guestIpDay', 'autoPrimaryMs', 'autoFallbackMs', 'guestGlobalGeminiDay']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
+  for (const k of ['port', 'maxBodyBytes', 'maxTokens', 'timeoutMs', 'maxInFlight', 'guestGlobalDay', 'guestIpDay', 'autoPrimaryMs', 'autoFallbackMs', 'autoFirstTokenMs', 'maxLocalInFlight', 'guestGlobalGeminiDay']) if (!Number.isFinite(cfg[k]) || cfg[k] <= 0) errs.push(`${k} must be a positive number`);
   if (errs.length) throw new Error('Configuration problem:\n - ' + errs.join('\n - '));
   return cfg;
 }
@@ -132,6 +133,38 @@ async function callUpstream(cfg, which, system, msgs, signal) {
   return { text: pick(await r.json()) };
 }
 
+/** Ask the local AI in streaming mode so we can tell "slow to start" (busy, cold, or the Mac went silent) from "working".
+ *  No first token within firstMs, or the whole answer not done within totalMs, throws AbortError and the caller falls back to Gemini.
+ *  Thinking tokens count as progress. Malformed lines are ignored. An empty stream is a failure, not an empty answer. */
+async function callLocalStreaming(cfg, system, msgs, { firstMs, totalMs }) {
+  const ac = new AbortController();
+  const firstTimer = setTimeout(() => ac.abort(), firstMs), totalTimer = setTimeout(() => ac.abort(), totalMs);
+  try {
+    const headers = { 'content-type': 'application/json' }; if (cfg.qwenKey) headers.authorization = `Bearer ${cfg.qwenKey}`;
+    const r = await fetch(`${cfg.qwenBase}/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ ...toOpenAi(system, msgs, cfg), stream: true }), signal: ac.signal });
+    if (!r.ok) { await r.arrayBuffer().catch(() => {}); return { status: r.status }; }
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = '', text = '', alive = false;
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim(); if (!data || data === '[DONE]') continue;
+        let j; try { j = JSON.parse(data); } catch { continue; }
+        const d = j?.choices?.[0]?.delta; if (!d || typeof d !== 'object') continue;
+        const think = d.reasoning ?? d.reasoning_content;
+        if (!alive && ((typeof d.content === 'string' && d.content) || (typeof think === 'string' && think))) { alive = true; clearTimeout(firstTimer); }
+        if (typeof d.content === 'string') text += d.content;
+      }
+    }
+    if (!text) return { status: 502 };                   // it said nothing useful: count as a failure so Gemini takes over
+    return { text };
+  } finally { clearTimeout(firstTimer); clearTimeout(totalTimer); }
+}
+
 // ---------- request validation ----------
 function validate(b, cfg) {
   if (!b || typeof b !== 'object' || typeof b.system !== 'string' || !Array.isArray(b.messages)) return 'Request must have a system string and a messages list.';
@@ -165,7 +198,7 @@ export function ipBucket(ip) {
 export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
   const hourly = new Window(), daily = new Window(), global = new Window(), fails = new Window();
   const salt = crypto.randomBytes(8).toString('hex');
-  let inFlight = 0;
+  let inFlight = 0, localInFlight = 0;
   // Is the local AI reachable? Cached, so a sleeping Mac costs one quick check, not a wait on every request.
   let pState = { up: true, at: 0 };
   const markPrimary = (up) => { pState = { up, at: Date.now() }; };
@@ -273,7 +306,17 @@ export function createProxy(cfg, { log = (line) => console.log(line) } = {}) {
       let out, err, undoFallback = () => {}, used = primary;
       if (cfg.upstream === 'auto') {
         // local AI first; Gemini takes over by itself when the local one is off, slow, or failing
-        if (await primaryUp()) { try { out = await callOne('qwen', cfg.autoPrimaryMs); } catch (e) { err = e; } if (err || out.status) markPrimary(false); }
+        // The Mac handles only a couple of requests well at once; more kids than that go straight to Gemini instead of queueing.
+        // The slot is taken BEFORE any await, so many simultaneous requests cannot all slip past the cap.
+        if (localInFlight < cfg.maxLocalInFlight) {
+          localInFlight++;
+          try {
+            if (await primaryUp()) {
+              try { out = await callLocalStreaming(cfg, v.system, v.msgs, { firstMs: cfg.autoFirstTokenMs, totalMs: cfg.autoPrimaryMs }); } catch (e) { err = e; }
+              if (err || out.status) markPrimary(false);
+            }
+          } finally { localInFlight--; }
+        }
         if (err || !out || out.status) {
           upNote = err ? ` up=${err.name === 'AbortError' ? 'timeout' : 'neterr'}` : out ? ` up=${out.status}` : ' up=down';
           const fb = reserve(buildChecks('gemini', 'G:'), Date.now());

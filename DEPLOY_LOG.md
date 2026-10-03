@@ -37,3 +37,16 @@
 - App: Shared server needs no passcode (optional), sends a per-browser guest id (localStorage `dbb.guest`).
 - Known: the local model unloads after idle, so the first build after a quiet spell can take ~30 s (a normal build 55-65 s). Gemini answers in 1-5 s.
 - 2026-10-02 keep-warm: gateway now pings Ollama every 4 min (WARM_MODEL=qwen3.5:9b, keep_alive 30m); reinstalled with `local-llm-gateway install`. Found Ollama's runner wedged in "Stopping…" (direct requests 60-90 s); ended only the llama-server child (SIGTERM), reloaded: first load 22 s, then 0.14 s. The wedge pre-dates keep-warm (seen in the first `ollama ps` of this session). If it recurs, see tools/local-llm-gateway/README.md.
+
+## 2026-10-02 adversarial review (tests that try to break it, run against the real system)
+Found and fixed (each with a test that failed first):
+- Many kids at once: 5 of 8 were told "busy" and the rest waited ~65 s. Now MAX_IN_FLIGHT defaults to 12 in auto mode (the VPS env had 3 pinned; removed), the Mac is asked for at most MAX_LOCAL_IN_FLIGHT=2 at a time (race fixed: slot taken before the await), extra kids go straight to Gemini. Live re-test: 8/8 answered, 6 in ~1 s, 2 in 13 s.
+- A busy, cold or silent local AI no longer makes kids wait out the long timeout: the local AI is asked in streaming mode and must produce its first token within AUTO_FIRST_TOKEN_MS=12000 or Gemini answers. Black-holing the Mac on the live VPS: first kid 3.1 s, next 0.6 s.
+- Auto local-server detection in the app silently swapped a custom address for a different server (and the e2e hit the real gateway). Now it only acts when the saved address is one of the usual defaults; it never picks an embedding model; prefers the gateway's warm model (gateway health now reports it).
+- Raw nginx pages (413/502/503/504) and non-JSON/empty 200s now give clear messages; an unreadable picture now gives a clear message instead of doing nothing.
+- If the lookup threw, the Generate button could stay disabled forever; it is now guarded.
+Findings that are NOT fixed (decisions for the owner):
+- Guest access cannot tell a browser from a script that sends the right Origin header. Caps bound the damage (per browser, per connection, per day, global) but a determined script can use the guest allowance. Set OPEN_ACCESS=0 to require a passcode.
+- The Mac's local model is shared with claude-mem and other tools: trivial requests took 34-87 s to produce a first token, so the 12 s first-token limit sends most kids to Gemini. Keep-warm does not help (an empty-prompt ping does not extend Ollama's expiry on an already loaded model) and is not the bottleneck.
+- Tailscale device keys expire 2027-03-06 (Mac) and 2027-03-30 (VPS); an expired key silently drops the device (kids then get Gemini only). Disable key expiry for both in the Tailscale admin console.
+- Test model `brickbuilder` was created and removed again while measuring; Ollama keeps only one model loaded at a time on this Mac.

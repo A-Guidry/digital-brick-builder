@@ -106,3 +106,9 @@ test('keep-warm: does nothing unless WARM_MODEL is set, and survives a dead Olla
   assert.match(logs[0], /Ollama not answering/);
 });
 test('invalid WARM_EVERY_MS is refused at startup', () => { assert.throws(() => loadConfig({ WARM_EVERY_MS: '5' }), /at least 1000/); });
+
+test('health tells apps which model is kept loaded (only when keep-warm is on)', async () => {
+  const g = await start({ WARM_MODEL: 'qwen-test', WARM_EVERY_MS: '100000' });
+  assert.deepEqual(await (await fetch(g.base + '/gateway/health', { headers: { origin: SITE } })).json(), { ok: true, upstream: `http://127.0.0.1:${g.o.port}`, warm: 'qwen-test' });
+  await g.close();
+});

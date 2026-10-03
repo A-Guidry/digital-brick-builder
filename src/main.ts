@@ -11,7 +11,7 @@ import { makeBags, Bag } from './bags';
 import type { LooseSpec } from './pile';
 import { partsList, wantedListXml, csv } from './bricklink';
 import { PART_BY_ID, COLOR_BY_ID } from './catalog';
-import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, passcodeFromHash, Settings, ProviderId } from './llm';
+import { complete, loadSettings, saveSettings, clearKeys, isConfigured, testConnection, listLocalModels, detectLocalServer, pickChatModel, gatewayWarmModel, passcodeFromHash, Settings, ProviderId } from './llm';
 import { systemPrompt, userPrompt, Msg } from './prompt';
 
 const $ = <T extends HTMLElement>(s: string) => document.querySelector(s) as T;
@@ -429,12 +429,14 @@ window.addEventListener('paste', e => { const f = Array.from(e.clipboardData?.fi
 $('#drop-clear').onclick = e => { e.stopPropagation(); setImage(null); };
 async function takeImage(f: File) {
   if (!f.type.startsWith('image/')) { setNote('That file is not an image.', true); return; }
-  const bmp = await createImageBitmap(f);
-  const s = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
-  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
-  c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
-  const url = c.toDataURL('image/jpeg', 0.85);
-  setImage({ mime: 'image/jpeg', base64: url.split(',')[1], url });
+  try {
+    const bmp = await createImageBitmap(f);
+    const s = Math.min(1, 1024 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round(bmp.width * s)); c.height = Math.max(1, Math.round(bmp.height * s));
+    c.getContext('2d')!.drawImage(bmp, 0, 0, c.width, c.height);
+    const url = c.toDataURL('image/jpeg', 0.85);
+    setImage({ mime: 'image/jpeg', base64: url.split(',')[1], url });
+  } catch { setImage(null); setNote('Could not read that picture. Try a different one (a normal JPG or PNG works best).', true); }
 }
 function setImage(i: typeof image) {
   image = i;
@@ -457,6 +459,7 @@ async function generate() {
   if (!text.trim() && !image) { setNote('Type what you want to build, or drop a picture.', true); return; }
   if (!isConfigured(settings)) { setNote('No AI is set up yet. Open AI settings, or try a ready-made build.', true); ($('#settings') as HTMLDialogElement).showModal(); syncSettingsUi(); return; }
   busy = true; ($('#go') as HTMLButtonElement).disabled = true; $('#stage').classList.add('busy');
+  if (settings.provider === 'local' && !localVerified) { setNote('Looking for your local model…'); try { await findModels(); } catch { /* the normal error path below explains what is wrong */ } }
   logReset(); log(image ? 'Sending picture + notes to the AI…' : 'Asking the AI to describe shapes…', 'AI');
   currentPreset = ''; document.querySelectorAll('#presets button').forEach(x => x.classList.remove('on'));
   try {
@@ -485,18 +488,33 @@ function syncSettingsUi() {
 function readSettingsUi() {
   for (const k of ['anthropicKey', 'anthropicModel', 'geminiKey', 'geminiModel', 'localUrl', 'localModel', 'sharedUrl', 'sharedPasscode'] as const) settings[k] = ($(`#${k}`) as HTMLInputElement).value.trim();
 }
-/** Ask the local server which models it really has, fill the model box's suggestions, and fix a model name that is not installed. */
-async function findModels() {
-  const out = $('#models-out'); out.textContent = 'Looking…';
-  try {
-    const ids = await listLocalModels(settings);
-    $('#localModelList').innerHTML = ids.map(id => `<option value="${esc(id)}"></option>`).join('');
-    if (!ids.length) { out.textContent = 'The server answered, but it has no models installed.'; return; }
-    if (ids.includes(settings.localModel)) { out.textContent = `Installed: ${ids.join(', ')}`; return; }
-    const was = settings.localModel;
-    settings.localModel = ids[0]; ($('#localModel') as HTMLInputElement).value = ids[0]; saveSettings(settings); refreshNote();
-    out.textContent = `"${was}" is not installed, so I picked "${ids[0]}". Installed: ${ids.join(', ')}`;
-  } catch (e) { out.textContent = (e as Error).message; }
+let localVerified = false;   // true once a local server that accepts this website has been found in this visit
+/** Find a local model server that works with this website (tries the saved address, then the usual ones), switch to it,
+ *  and fix a model name that is not installed. Needs no typing from the person. Returns true when one was found. */
+async function findModels(): Promise<boolean> {
+  const out = $('#models-out'); out.textContent = 'Looking for your local model…';
+  const hit = await detectLocalServer(settings);
+  if (!hit) {
+    localVerified = false;
+    try { await listLocalModels(settings); out.textContent = 'No local model server was found.'; }
+    catch (e) { out.textContent = (e as Error).message; }      // the friendly reason (refused website, Chrome block, not running…)
+    return false;
+  }
+  localVerified = true;
+  const notes: string[] = [];
+  if (hit.url !== settings.localUrl.trim().replace(/\/+$/, '')) { settings.localUrl = hit.url; ($('#localUrl') as HTMLInputElement).value = hit.url; notes.push(`Found your local model server at ${hit.url}.`); }
+  $('#localModelList').innerHTML = hit.models.map(id => `<option value="${esc(id)}"></option>`).join('');
+  if (!hit.models.length) { saveSettings(settings); refreshNote(); out.textContent = 'The server answered, but it has no models installed.'; return true; }
+  if (!hit.models.includes(settings.localModel)) {
+    const pick = pickChatModel(hit.models, await gatewayWarmModel(hit.url));
+    if (pick) {
+      notes.push(`"${settings.localModel}" is not installed, so I picked "${pick}".`);
+      settings.localModel = pick; ($('#localModel') as HTMLInputElement).value = pick;
+    } else notes.push(`"${settings.localModel}" is not installed and I found no chat model to switch to.`);
+  }
+  saveSettings(settings); refreshNote();
+  out.textContent = [...notes, `Installed: ${hit.models.join(', ')}`].join(' ');
+  return true;
 }
 $('#find-models').onclick = () => { readSettingsUi(); void findModels(); };
 $('#btn-settings').onclick = () => { syncSettingsUi(); dlg.showModal(); if (settings.provider === 'local') void findModels(); };
@@ -505,11 +523,12 @@ const persist = () => { readSettingsUi(); saveSettings(settings); refreshNote();
 dlg.addEventListener('close', persist);
 $('#save-close').onclick = () => { persist(); dlg.close(); };
 dlg.addEventListener('click', e => { if (e.target === dlg) { persist(); dlg.close(); } });   // click the dimmed backdrop to close
-dlg.addEventListener('input', persist);
+dlg.addEventListener('input', e => { if ((e.target as HTMLElement).id === 'localUrl') localVerified = false; persist(); });
 dlg.querySelector('form')!.addEventListener('submit', persist);
 $('#clear-keys').onclick = () => { readSettingsUi(); saveSettings(settings); clearKeys(); settings = loadSettings(); syncSettingsUi(); refreshNote(); };
 $('#test').onclick = async () => {
   readSettingsUi(); const out = $('#test-out'); out.textContent = 'Testing…';
+  if (settings.provider === 'local' && !localVerified) await findModels();
   try { out.textContent = 'Connected. Reply: ' + await testConnection(settings); } catch (e) { out.textContent = (e as Error).message; }
 };
 
