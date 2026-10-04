@@ -323,15 +323,42 @@ const jpegOk = b64 => typeof b64 === 'string' && Buffer.from(b64, 'base64').suba
 }
 { // parts catalog end to end: the AI names parts, the app builds them
   const CAR = { name: 'Parts car', plan: ['body', 'wheels', 'glass'], mirror_x: true,
-    shapes: [{ type: 'box', color: 'red', center: [0, 2.4, 0], size: [8, 2.4, 14] }, { type: 'box', color: 'red', center: [0, 4.8, -1], size: [7, 2.4, 7] }],
-    features: [{ kind: 'wheel', at: [4.2, 2, 4], facing: '+x', size: 4 }, { kind: 'wheel', at: [4.2, 2, -4], facing: '+x', size: 4 }, { kind: 'windshield', at: [0, 4.8, 2.5], size: [5, 1.6] }] };
+    shapes: [{ type: 'box', color: 'red', center: [0, 2.8, 0], size: [8, 2.4, 14] }, { type: 'box', color: 'red', center: [0, 5.2, -1], size: [7, 2.4, 7] }],
+    features: [{ kind: 'wheel', at: [4, 0, 4], facing: '+x' }, { kind: 'wheel', at: [4, 0, -4], facing: '+x' }, { kind: 'windshield', at: [0, 5.2, 2.5], size: [5, 1.6] }] };
   const seen = []; const p = await fresh({}); await mockProxy(p, [CAR], seen);
   await p.fill('#prompt', 'a red car'); await p.click('#go'); await idle(p);
   const colours = await p.evaluate(() => { const m = window.__bf.model; return [...new Set(m.parts.map(x => x.color))]; });
   check('parts: the system prompt offers the catalog', /PARTS CATALOG/.test(seen[0]?.body.system || '') && /- wheel:/.test(seen[0]?.body.system || ''));
-  check('parts: a car described with wheel and windshield parts builds with black tyres and glass', colours.includes('black') && colours.includes('medium_azure') && (await p.locator('#banner').isHidden()), colours.join(','));
+  check('parts: a car described with wheel and windshield parts builds with real wheel units and glass', (await p.evaluate(() => window.__bf.model.parts.filter(q => q.part === 'unit-wheel').length)) === 4 && colours.includes('trans_light_blue') && (await p.locator('#banner').isHidden()), colours.join(','));
   check('parts: the saved spec keeps the parts list', (await p.evaluate(() => window.__bf.spec?.features?.length)) === 3);
   check('parts: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await p.context().close();
+}
+{ // real wheel units: the real LDraw wheel shape is drawn, on the baseplate, and listed under its real part numbers
+  const CAR = { name: 'Wheel car', plan: ['body', 'wheels'], mirror_x: true,
+    shapes: [{ type: 'box', color: 'red', center: [0, 2.8, 0], size: [8, 2.4, 16] }, { type: 'box', color: 'red', center: [0, 5.2, -1.5], size: [7, 2.4, 8] }],
+    features: [{ kind: 'wheel', at: [4, 0, 5], facing: '+x' }, { kind: 'wheel', at: [4, 0, -5], facing: '+x' }] };
+  const seen = []; const p = await fresh({}); await mockProxy(p, [CAR], seen);
+  await p.fill('#prompt', 'a red car'); await p.click('#go'); await idle(p);
+  await p.evaluate(() => window.__bf.viewer.showAll());
+  const info = await p.evaluate(() => {
+    const v = window.__bf.viewer, out = { wheels: 0, bigVerts: 0, minY: 99, maxOutside: 0, lift: window.__bf.model.lift, parts: window.__bf.model.parts.filter(q => q.part === 'unit-wheel').length };
+    v.root.updateMatrixWorld(true);
+    for (const q of window.__bf.model.parts.filter(q => q.part === 'unit-wheel')) {
+      const m = v.meshes.get(q.id); if (!m) continue;
+      out.wheels++; out.bigVerts = m.geometry.attributes.position.count;
+      const pos = m.geometry.attributes.position, e = m.matrixWorld.elements;
+      for (let i = 0; i < pos.count; i++) { const y = e[1] * pos.getX(i) + e[5] * pos.getY(i) + e[9] * pos.getZ(i) + e[13]; if (y < out.minY) out.minY = y; }
+    }
+    return out;
+  });
+  check('wheels: four real wheel units are drawn from the real part shapes (thousands of triangles, not a box)', info.wheels === 4 && info.parts === 4 && info.bigVerts > 5000, JSON.stringify(info));
+  check('wheels: the tyres touch the baseplate (lowest point within 0.05 stud of the plate) and the model stands on lift', Math.abs(info.minY) < 0.05 && info.lift > 1, `minY ${info.minY}, lift ${info.lift}`);
+  await p.click('.tabs button[data-tab=parts]');
+  const list = await p.locator('#panel-parts, #tab-parts, [data-panel=parts]').first().innerText().catch(() => '');
+  check('wheels: the parts list has the real holder, hub and tyre numbers', /4488/.test(list) && /6014b/.test(list) && /6015/.test(list), list.slice(0, 120));
+  check('wheels: no page errors', p.errors.length === 0, p.errors.join('|'));
+  await shot(p, '17-real-wheels');
   await p.context().close();
 }
 { // a bad part from the AI is sent back as a plain-English problem, then fixed

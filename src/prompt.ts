@@ -9,15 +9,15 @@ export const EXAMPLE = {
   mirror_x: true,
   shapes: [
     { type: 'box', color: 'light_gray', center: [0, 0.6, 0], size: [12, 1.2, 10] },
-    { type: 'box', color: 'white', center: [0, 3.6, 0], size: [10, 4.8, 8] },
-    { type: 'box', op: 'subtract', center: [0, 3.6, 0], size: [8, 4.8, 6] },
+    { type: 'box', color: 'tan', center: [0, 5.4, 0], size: [10, 8.4, 8] },
+    { type: 'box', op: 'subtract', center: [0, 5.4, 0], size: [8, 8.4, 6] },
   ],
   features: [
-    { kind: 'roof', at: [0, 6, 0], size: [12, 3, 11], color: 'red' },
-    { kind: 'door', at: [0, 1.2, 4], size: [2, 3.6] },
-    { kind: 'window', at: [3, 4.2, 4], size: 2 },
-    { kind: 'window', at: [5, 4.2, 0], facing: '+x', size: 2 },
-    { kind: 'chimney', at: [3, 6.5, -2], size: 4 },
+    { kind: 'roof', at: [0, 9.6, 0], size: [10, 3, 8], color: 'red' },
+    { kind: 'door', at: [0, 1.2, 4], facing: '+z' },
+    { kind: 'window', at: [3, 6.6, 4], facing: '+z', size: [2, 2.4] },
+    { kind: 'window', at: [5, 6.6, 0], facing: '+x', size: [2, 2.4] },
+    { kind: 'chimney', at: [3, 10.2, -2], size: 4 },
   ],
 };
 
@@ -27,16 +27,16 @@ export const EXAMPLE_CAR = {
   plan: ['a long low red body', 'a smaller cabin on top, set back from the front', 'four wheels, one at each corner', 'glass in the cabin: a windshield and side windows', 'two headlights on the front', 'a bumper on the front'],
   mirror_x: true,
   shapes: [
-    { type: 'box', color: 'red', center: [0, 2.4, 0], size: [8, 2.4, 16] },
-    { type: 'box', color: 'red', center: [0, 4.8, -1.5], size: [7, 2.4, 8] },
+    { type: 'box', color: 'red', center: [0, 2.8, 0], size: [8, 2.4, 16] },
+    { type: 'box', color: 'red', center: [0, 5.2, -1.5], size: [7, 2.4, 8] },
   ],
   features: [
-    { kind: 'wheel', at: [4.2, 2, 5], facing: '+x', size: 4 },
-    { kind: 'wheel', at: [4.2, 2, -5], facing: '+x', size: 4 },
-    { kind: 'windshield', at: [0, 4.8, 2.5], size: [5, 1.6] },
-    { kind: 'window', at: [3.5, 4.8, -1.5], facing: '+x', size: [4, 1.6] },
-    { kind: 'headlight', at: [2.5, 2.6, 8], size: 1.5 },
-    { kind: 'bumper', at: [0, 1.2, 8], size: 8 },
+    { kind: 'wheel', at: [4, 0, 5], facing: '+x' },
+    { kind: 'wheel', at: [4, 0, -5], facing: '+x' },
+    { kind: 'windshield', at: [0, 5.2, 2.5], facing: '+z' },
+    { kind: 'window', at: [3.5, 5.2, -1.5], facing: '+x', size: [2, 2.4] },
+    { kind: 'headlight', at: [2.5, 3.0, 8], size: 1.5 },
+    { kind: 'bumper', at: [0, 1.6, 8], size: 8 },
   ],
 };
 
@@ -93,7 +93,7 @@ Shapes apply in order: "add" fills, "subtract" carves, "paint" recolours only wh
 
 PARTS CATALOG. For the things below, do NOT build them out of shapes: add them to "features" (at most ${MAX_FEATURES}) and the program builds each one correctly. A feature is { "kind": string, "at": [x,y,z], "size": number or [width,height] (optional), "facing": "+x"|"-x"|"+z"|"-z" (optional, default +z: which way it points out of the model), "color": colour (optional), "accent": colour (optional) }. Features are added after all the shapes, painted ones last. With "mirror_x", give only the +x side. Put "at" exactly on the surface of a shape you built.
 ${featureCatalogText()}
-Use a feature every time the subject has one of these: wheels on every vehicle, windows and a door on every building, eyes on every creature.
+Use a feature every time the subject has one of these: wheels on every vehicle, windows and a door on every building, eyes on every creature. Wheels, windows, windshields and doors are REAL parts (real part numbers and shapes), so they come in fixed sizes: a window is 2 x 2.4, 2 x 3.6 or 4 x 3.6 studs, a windshield is 4 wide and 2.4 tall, a door is 4 wide and 7.2 tall (so a building with a door needs walls at least 8 studs tall). A roof is built from real slope bricks, so give it exactly the width and length of the walls it sits on (no overhang) and put its y at the top of the walls; its height follows from its width. Doors are for buildings and buses only: never put a door on a car, truck or other small vehicle (give those windows). A wheel is a real wheel unit that hangs below the body, so on any vehicle the body must start at y = 1.6 (nothing of the body below that), and "at" for a wheel is the body's side face (x) and the place along the car (z).
 
 MAKE IT RECOGNISABLE (this matters as much as the rules below). A child must know what it is at a glance from the SIDE and the FRONT:
 - First write "plan": 5 to 9 short items naming the features that make this subject recognisable, and where each goes (for an animal: how many legs and where, body, neck, head, tail, and any special feature the user asked for such as a horn, wings, a trunk or a mane). Then build EVERY plan item with its own shape(s). Never leave a plan item out, and never ignore something the user asked for.

@@ -1,4 +1,5 @@
-// Real LEGO parts (rectangular bricks and plates) and real colours with BrickLink IDs.
+// Real LEGO parts (rectangular bricks and plates; wheel units, windows and doors from specials.json) and real colours with BrickLink IDs.
+import { UNITS } from './specials';
 export interface PartDef {
   id: string;          // our key, e.g. "brick-2x4"
   kind: 'brick' | 'plate';
@@ -20,7 +21,21 @@ export const PARTS: PartDef[] = [
   mk('plate', 1, 6, '3666'), mk('plate', 1, 8, '3460'), mk('plate', 2, 2, '3022'), mk('plate', 2, 3, '3021'),
   mk('plate', 2, 4, '3020'), mk('plate', 2, 6, '3795'), mk('plate', 2, 8, '3034'),
 ];
-export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries(PARTS.map(p => [p.id, p]));
+/** Real parts that are not plain rectangles (wheel units, windows, doors). One per unit in specials.json. They behave like the brick or plate of their
+ *  footprint for contact and ordering, are drawn from their real shape, and appear on the shopping list under their real numbers. They are never
+ *  offered to the packer (that only uses PARTS). */
+export interface SpecialDef extends PartDef {
+  /** Companion real parts that ride on the anchor (hub, tyre, glass, door leaf). `accent` = takes the model's second colour. */
+  extras: { name: string; bl: string; color: string; accent: boolean }[];
+  unit: string;       // key into src/specials.json
+}
+export const SPECIAL_PARTS: SpecialDef[] = Object.entries(UNITS).map(([unit, u]) => ({
+  id: `unit-${unit}`, kind: u.footprint[2] <= 1 ? 'plate' : 'brick', w: u.footprint[0], d: u.footprint[1], h: u.footprint[2], bl: u.bl, unit,
+  name: u.parts[0].name,
+  extras: u.parts.filter(p => p.tag === 'extra').map(p => ({ name: p.name, bl: p.bl, color: p.colour === 'accent' ? (p.accentDefault ?? 'light_gray') : (p.colour ?? 'white'), accent: p.colour === 'accent' })),
+}));
+export const PART_BY_ID: Record<string, PartDef> = Object.fromEntries([...PARTS, ...SPECIAL_PARTS].map(p => [p.id, p]));
+export const SPECIAL_BY_ID: Record<string, SpecialDef> = Object.fromEntries(SPECIAL_PARTS.map(p => [p.id, p]));
 
 export interface ColorDef { id: string; name: string; bl: number; hex: string; }
 export const COLORS: ColorDef[] = [
@@ -44,6 +59,8 @@ export const COLORS: ColorDef[] = [
   { id: 'light_gray', name: 'Light Bluish Gray', bl: 86, hex: '#a0a5a9' },
   { id: 'dark_gray', name: 'Dark Bluish Gray', bl: 85, hex: '#6c6e68' },
   { id: 'bright_pink', name: 'Bright Pink', bl: 104, hex: '#e4adc8' },
+  { id: 'trans_light_blue', name: 'Trans-Light Blue', bl: 15, hex: '#8ecbe0' },
+  { id: 'trans_clear', name: 'Trans-Clear', bl: 12, hex: '#e9eef2' },
   { id: 'purple', name: 'Dark Purple', bl: 89, hex: '#3f2a6d' },
 ];
 export const COLOR_BY_ID: Record<string, ColorDef> = Object.fromEntries(COLORS.map(c => [c.id, c]));

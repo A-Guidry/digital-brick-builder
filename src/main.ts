@@ -288,7 +288,7 @@ let bags: Bag[] = [], bagState: BagState[] = [], curBag = -1, bStep = 0, ripping
 const bPlaced = new Set<number>(), bPending = new Set<number>();
 let bHist: { id: number; spec: LooseSpec }[] = [];
 const bagOfStep = (n: number) => bags.find(b => b.steps.some(s => s.n === n))?.n ?? 1;
-const looseSpec = (p: Placed): LooseSpec => ({ part: p.part, color: p.color, fx: p.fx, fz: p.fz, h: p.h });
+const looseSpec = (p: Placed): LooseSpec => ({ part: p.part, color: p.color, fx: p.fx, fz: p.fz, h: p.h, ...(p.special ? { special: p.special } : {}) });
 
 function resetBuild() {
   bags = model ? makeBags(steps) : []; bagState = bags.map(() => 'sealed'); curBag = -1; bStep = 0; ripping = false; bMsg = '';

@@ -6,6 +6,7 @@
 // wall reaches ~2 studs in so a few tenths of an error in "at" still hits the visible surface.
 import { resolveColor, COLORS } from './catalog';
 import type { Shape, Vec3 } from './shapes';
+import { WHEEL_TOP, UNITS, UNIT_NAMES } from './specials';
 
 export type Facing = '+x' | '-x' | '+z' | '-z' | '+y';
 export interface Feature {
@@ -45,36 +46,88 @@ function onWall(r: Req, lat: number, h: number, depth: number, over: number, up:
 const paintWall = (r: Req, lat: number, h: number, color: string, up = 0, side = 0): Shape => onWall(r, lat, h, 2, -0.75, up, side, 'paint', color);
 const col = (x: number, y: number, z: number, h: number, color: string): Shape => ({ type: 'box', color, center: [cell(x), y + h / 2, cell(z)], size: [1.02, h, 1.02] });
 
-function windowShapes(r: Req, dw: number, dh: number, frame: boolean): Shape[] {
-  const [w, h] = wh(r.size, dw, dh), glass = r.color ?? 'medium_azure', out: Shape[] = [];
-  if (frame && w >= 3 && h >= 2.34) {
-    out.push(paintWall(r, w, h, r.accent ?? 'white'));
-    out.push(paintWall(r, w - 2, h - 1.34, glass));
-  } else out.push(paintWall(r, w, h, glass));
+
+/** A real wheel unit: where its holder plate goes. The holder's outer edge sits flush with the body's side, so the hub and tyre hang just outside it. */
+function wheelHolder(r: { at: Vec3; facing: Facing }): { cx: number; cz: number } {
+  const d = DIRS[r.facing === '+y' ? '+z' : r.facing];
+  return { cx: d.xAxis ? edge(r.at[0]) - d.x : edge(r.at[0]), cz: d.xAxis ? edge(r.at[2]) : edge(r.at[2]) - d.z };
+}
+export type Facing4 = '+x' | '-x' | '+z' | '-z';
+/** A real-part unit the compiler must place as actual parts (not as bricks). `hang` units (wheels) carry the holder centre and its top; `wall` units carry the surface point. */
+export interface UnitAt { unit: string; cls: 'hang' | 'wall' | 'block'; facing: Facing4; color: string; accent: string | null; cx: number; cz: number; topY: number; at: Vec3 }
+const flip = (f: Facing4): Facing4 => (f === '+x' ? '-x' : f === '-x' ? '+x' : f);
+const dflt = (u: string, k: 'bodyDefault') => UNITS[u][k] ?? 'light_gray';
+/** Which real window fits a requested [width, height] (studs) best. */
+function windowFor(size: Feature['size']): string {
+  const rw = Array.isArray(size) ? size[0] : typeof size === 'number' ? size : 2, rh = Array.isArray(size) ? (size[1] ?? size[0]) : typeof size === 'number' ? size : 2;
+  const names = UNIT_NAMES.filter(n => n.startsWith('window-'));
+  return names.reduce((best, n) => {
+    const d = (m: string) => Math.abs(UNITS[m].footprint[0] - rw) + Math.abs(UNITS[m].footprint[2] * 0.4 - rh);
+    return d(n) < d(best) ? n : best;
+  }, names[0]);
+}
+/** Real-part units for a spec's features, mirrored with the model when mirror_x is on. */
+export function unitsOf(features: Feature[] | undefined, mirror: boolean): UnitAt[] {
+  const out: UnitAt[] = [];
+  for (const f of features ?? []) {
+    const facing = (['+x', '-x', '+z', '-z'].includes(f.facing as string) ? f.facing : '+z') as Facing4;
+    let list: UnitAt[] = [];
+    if (f.kind === 'wheel') { const h = wheelHolder({ at: f.at, facing }); list = [{ unit: 'wheel', cls: 'hang', facing, color: f.color ?? dflt('wheel', 'bodyDefault'), accent: null, cx: h.cx, cz: h.cz, topY: WHEEL_TOP, at: f.at }]; }
+    else if (f.kind === 'window' || f.kind === 'windshield' || f.kind === 'door') {
+      const unit = f.kind === 'window' ? windowFor(f.size) : f.kind === 'windshield' ? 'windscreen' : 'door';
+      list = [{ unit, cls: 'wall', facing, color: f.color ?? UNITS[unit].bodyDefault ?? 'white', accent: f.accent ?? null, cx: f.at[0], cz: f.at[2], topY: 0, at: f.at }];
+    } else if (f.kind === 'slope') {
+      const want = Array.isArray(f.size) ? f.size[0] : typeof f.size === 'number' ? f.size : 2;
+      const unit = ['slope-1', 'slope-2', 'slope-4'].reduce((b, n) => (Math.abs(UNITS[n].footprint[0] - want) < Math.abs(UNITS[b].footprint[0] - want) ? n : b), 'slope-2');
+      list = [{ unit, cls: 'block', facing, color: f.color ?? 'red', accent: null, cx: f.at[0], cz: f.at[2], topY: 0, at: f.at }];
+    } else if (f.kind === 'roof') list = roofPlan(f).units;
+    const mirrorThis = mirror && Math.abs(f.at[0]) > 1e-6;            // a feature on the centre line is already symmetrical; a roof's two bands must not be doubled
+    for (const u of list) {
+      out.push(u);
+      if (mirrorThis) out.push({ ...u, cx: -u.cx, facing: flip(u.facing), at: [-u.at[0], u.at[1], u.at[2]] });
+    }
+  }
   return out;
 }
 
+/** A real roof: courses of real slope bricks along both long edges (each course 3 plates up and 2 studs further in), with a plain brick core behind them. */
+function roofPlan(f: { at: Vec3; size?: number | number[]; facing?: string; color?: string }): { shapes: Shape[]; units: UnitAt[] } {
+  const alongX = f.facing === '+x' || f.facing === '-x';
+  const sz = Array.isArray(f.size) ? f.size : typeof f.size === 'number' ? [f.size, f.size * 0.4, f.size] : [10, 4, 10];
+  const across0 = alongX ? sz[2] ?? sz[0] : sz[0], along0 = alongX ? sz[0] : sz[2] ?? sz[0];
+  const W = Math.max(4, Math.round(across0 / 2) * 2), D = Math.max(1, Math.round(along0));
+  const cx = Math.round(f.at[0]), cz = Math.round(f.at[2]), y0 = f.at[1], colour = f.color ?? 'red';
+  const acrossC = alongX ? cz : cx, alongC = alongX ? cx : cz, start = Math.round(alongC - D / 2);
+  const shapes: Shape[] = [], units: UnitAt[] = [], COURSE = 1.2;
+  const pos = (a: number, b: number): Vec3 => (alongX ? [b, 0, a] : [a, 0, b]);
+  const box = (width: number, y: number): Shape => ({ type: 'box', color: colour, center: alongX ? [start + D / 2, y + COURSE / 2, acrossC] : [acrossC, y + COURSE / 2, start + D / 2], size: alongX ? [D, COURSE, width] : [width, COURSE, D] });
+  let w = W, i = 0;
+  for (; w >= 4; w -= 4, i++) {
+    const y = y0 + COURSE * i;
+    shapes.push(box(w, y));
+    for (const side of [-1, 1] as const) {
+      const band = acrossC + side * (w / 2 - 1), facing: Facing4 = alongX ? (side < 0 ? '-z' : '+z') : (side < 0 ? '-x' : '+x');
+      for (let p = start, left = D; left > 0;) {
+        const len = left >= 4 ? 4 : left >= 2 ? 2 : 1, mid = p + len / 2, unit = len === 4 ? 'slope-4' : len === 2 ? 'slope-2' : 'slope-1';
+        const at = pos(band, mid); at[1] = y;
+        units.push({ unit, cls: 'block', facing, color: colour, accent: null, cx: at[0], cz: at[2], topY: 0, at });
+        p += len; left -= len;
+      }
+    }
+  }
+  if (w === 2) shapes.push(box(2, y0 + COURSE * i));                      // the ridge: a plain two-wide cap
+  return { shapes, units };
+}
+
 const KINDS: Record<string, Kind> = {
-  wheel: { paint: false, facings: H4, at: 'the CENTRE of the wheel', doc: 'a tyre with a hub and an axle that reaches into the body. facing = the side of the body it is on. size = diameter (default 4). color = tyre (black), accent = hub',
-    build: r => {
-      const d = DIRS[r.facing], dia = Math.max(2, num(r.size, 4)), tl = Math.min(2.2, Math.max(1.2, dia * 0.4)), [x, y, z] = r.at, ax = d.xAxis ? 'x' : 'z';
-      const at = (o: number): Vec3 => [x + d.x * o, y, z + d.z * o];
-      return [
-        { type: 'cylinder', color: r.color ?? 'black', center: at(0), radius: dia / 2, length: tl, axis: ax },
-        { type: 'cylinder', color: r.accent ?? 'light_gray', center: at(tl / 2 - 0.2), radius: Math.max(0.72, dia * 0.19), length: 0.9, axis: ax },
-        { type: 'box', color: 'dark_gray', center: at(-(tl / 2 + 0.9)), size: d.xAxis ? [2.4, 1.2, 1.2] : [1.2, 1.2, 2.4] },
-      ];
-    } },
-  window: { paint: true, facings: H4, at: 'the CENTRE of the window on the wall surface', doc: 'a window painted on a wall (with a frame when 3+ wide). size = width or [width, height] (default 2x2). color = glass, accent = frame',
-    build: r => windowShapes(r, 2, 2, true) },
-  windshield: { paint: true, facings: H4, at: 'the CENTRE of the glass on the surface', doc: 'a big glass panel for a car, bus or rocket cabin. size = [width, height] (default 4x2). color = glass',
-    build: r => windowShapes(r, 4, 2, false) },
-  door: { paint: true, facings: H4, at: 'the BOTTOM centre of the door on the wall surface', doc: 'a door with a handle. size = [width, height] (default 2x4). color = door, accent = handle',
-    build: r => {
-      const [w, h] = wh(r.size, 2, 4), out: Shape[] = [paintWall(r, w, h, r.color ?? 'reddish_brown', h / 2)];
-      if (w >= 2) out.push(paintWall(r, 1.02, 0.67, r.accent ?? 'yellow', h * 0.45, w / 4));
-      return out;
-    } },
+  wheel: { paint: false, facings: H4, at: 'x (or z) = the OUTER SIDE of the body the wheel is on, and z (or x) = where along the car; y is ignored', doc: 'a REAL wheel unit (wheel holder plate 4488 + wheel 6014b + tyre 6015, 2.5 studs across). facing = the side of the body it is on. The body must start at y 1.6 or higher so the tyre can touch the ground. color = the holder plate colour',
+    build: r => { const h = wheelHolder(r); return [{ type: 'box', color: r.color ?? 'dark_gray', center: [h.cx, WHEEL_TOP - 0.2, h.cz], size: [2, 0.4, 2] }]; } },
+  window: { paint: false, facings: H4, at: 'the CENTRE of the window on the OUTER SURFACE of the wall', doc: 'a REAL window (frame plus glass). size = [width, height] in studs; the nearest real size is used: 2 x 2.4, 2 x 3.6 or 4 x 3.6. color = frame (default white)',
+    build: () => [] },
+  windshield: { paint: false, facings: H4, at: 'the CENTRE of the windscreen on the OUTER SURFACE (front or back of the cabin)', doc: 'a REAL windscreen (clear part, 4 wide, 2.4 tall, 2 deep). Goes into the front or back of a cabin that is at least 4 wide',
+    build: () => [] },
+  door: { paint: false, facings: H4, at: 'the BOTTOM centre of the door on the OUTER SURFACE of the wall', doc: 'a REAL door with its frame: 4 wide and 7.2 tall (the wall must be at least that tall). color = frame (default white), accent = the door (default reddish_brown)',
+    build: () => [] },
   headlight: { paint: true, facings: H4, at: 'the CENTRE of the lamp on the surface', doc: 'a lamp. size default 1.5. color default yellow',
     build: r => { const s = Math.max(1.02, num(r.size, 1.5)); return [paintWall(r, s, Math.max(0.67, s * 0.67), r.color ?? 'yellow')]; } },
   taillight: { paint: true, facings: H4, at: 'the CENTRE of the lamp on the surface', doc: 'a red rear lamp. size default 1.5',
@@ -131,19 +184,10 @@ const KINDS: Record<string, Kind> = {
       if (dia >= 4) out.push(paintWall({ ...r, at: [x + d.x * dia / 2, y + h * 0.6, z + d.z * dia / 2] }, 1.5, 2, 'medium_azure'));
       return out;
     } },
-  roof: { paint: false, facings: H4, at: 'the BOTTOM centre of the roof, on top of the walls', doc: 'a pitched roof. size = [width, height, depth] (default 10x4x10). The ridge runs front to back; facing +x or -x turns it. color default red',
-    build: r => {
-      const [w, h, dd] = Array.isArray(r.size) ? [Math.max(2, r.size[0]), Math.max(1, r.size[1] ?? r.size[0] * 0.4), Math.max(2, r.size[2] ?? r.size[0])] : (() => { const s = Math.max(2, num(r.size, 10)); return [s, s * 0.4, s]; })();
-      const [x, y, z] = r.at, c = r.color ?? 'red', cy = y + h / 2;
-      if (DIRS[r.facing].xAxis) return [
-        { type: 'wedge', color: c, center: [x, cy, z - dd / 4], size: [w, h, dd / 2], slope: '-z' },
-        { type: 'wedge', color: c, center: [x, cy, z + dd / 4], size: [w, h, dd / 2], slope: '+z' },
-      ];
-      return [
-        { type: 'wedge', color: c, center: [x - w / 4, cy, z], size: [w / 2, h, dd], slope: '-x' },
-        { type: 'wedge', color: c, center: [x + w / 4, cy, z], size: [w / 2, h, dd], slope: '+x' },
-      ];
-    } },
+  roof: { paint: false, facings: H4, at: 'the BOTTOM centre of the roof, on top of the walls', doc: 'a REAL pitched roof: stepped courses of real slope bricks (3037, 3039, 3040) on both long edges with a brick core. size = [width across the ridge, ignored, length along it]; the width is made even and at least 4, and the height follows from the width (1.2 studs for every 2 studs of half-width). The ridge runs front to back; facing +x or -x turns it. color default red',
+    build: r => roofPlan(r).shapes },
+  slope: { paint: false, facings: H4, at: 'the BOTTOM centre of the slope, on top of something', doc: 'ONE real 45 degree slope brick (3037 is 4 wide, 3039 is 2, 3040 is 1; all 2 deep and 1.2 tall) for a nose, a bonnet or a ramp. facing = the way it goes DOWN. size = its width along the edge (1, 2 or 4). color default red',
+    build: () => [] },
   chimney: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the chimney, on the roof', doc: 'a brick chimney with a dark cap. size = height (default 3)',
     build: r => {
       const s = Math.max(1.5, num(r.size, 3)), [x, y, z] = r.at, cx = edge(x), cz = edge(z);

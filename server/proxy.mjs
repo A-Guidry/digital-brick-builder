@@ -97,7 +97,8 @@ function waitText(ms) {
 // ---------- upstream calls ----------
 function toOpenAi(system, msgs, cfg) {
   return {
-    model: cfg.qwenModel, stream: false, temperature: 0.4, max_tokens: cfg.maxTokens,
+    // The local model is a thinking model: left alone it spends its whole token budget reasoning before it writes a word.
+    model: cfg.qwenModel, stream: false, temperature: 0.4, max_tokens: cfg.maxTokens, reasoning_effort: 'none',
     messages: [{ role: 'system', content: system }, ...msgs.map(m => ({ role: m.role, content: m.image
       ? [{ type: 'image_url', image_url: { url: `data:${m.image.mime};base64,${m.image.base64}` } }, { type: 'text', text: m.text }]
       : m.text }))],

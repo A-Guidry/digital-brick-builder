@@ -126,3 +126,20 @@ describe('complaints the app can already rule out are ignored (the structural ch
     expect(r.missing.length).toBeGreaterThan(0);
   });
 });
+
+describe('the judge describing the model as floating is not a reason to rebuild', () => {
+  it('a low score whose only complaint is floating/detached, with nothing real missing, is lifted to a pass', () => {
+    for (const sees of ['a blocky robot floating above the baseplate with its legs detached', 'a castle model that is detached from the baseplate and floating in the air', 'hovering completely detached from the base']) {
+      const v = parseVerdict(JSON.stringify({ sees, matches: false, score: 3, missing: [], fix: 'attach it to the base' }))!;
+      expect(needsFix(v), sees).toBe(false); expect(v.score).toBeGreaterThanOrEqual(PASS_SCORE); expect(v.matches).toBe(true);
+    }
+  });
+  it('but a real missing feature still triggers a fix even when the description also says floating', () => {
+    const v = parseVerdict(JSON.stringify({ sees: 'a horse floating above the base', matches: false, score: 3, missing: ['no horn on the head'], fix: 'add a horn' }))!;
+    expect(needsFix(v)).toBe(true); expect(v.missing).toEqual(['no horn on the head']);
+  });
+  it('a real look-alike problem is not hidden by this rule', () => {
+    const v = parseVerdict(JSON.stringify({ sees: 'a tan animal that looks more like a llama than a dog', matches: false, score: 3, missing: [], fix: 'shorten the neck' }))!;
+    expect(needsFix(v)).toBe(true);
+  });
+});

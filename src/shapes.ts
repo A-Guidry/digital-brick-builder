@@ -1,5 +1,6 @@
 import { COLORS, resolveColor, PLATES_PER_STUD } from './catalog';
-import { Feature, validateFeatures, cleanFeatures, expandFeatures } from './features';
+import { Feature, validateFeatures, cleanFeatures, expandFeatures, unitsOf } from './features';
+import { UNITS, unitFootprint } from './specials';
 
 export type Vec3 = [number, number, number];
 export interface Shape {
@@ -127,6 +128,12 @@ export function specBounds(spec: ShapeSpec): { min: Vec3; max: Vec3 } | null {
     any = true;
     const b = bbox(s);
     for (let i = 0; i < 3; i++) { min[i] = Math.min(min[i], b.min[i]); max[i] = Math.max(max[i], b.max[i]); }
+  }
+  // Block parts (slopes) stand where the AI put them, so the model must reach them even when no shape does.
+  for (const u of unitsOf(spec.features, !!spec.mirror_x)) {
+    if (UNITS[u.unit].cls !== 'block') continue;
+    const { fx, fz, h } = unitFootprint(u.unit, u.facing), lo = [u.at[0] - fx / 2, u.at[1], u.at[2] - fz / 2], hi = [lo[0] + fx, lo[1] + h * 0.4, lo[2] + fz];
+    any = true; for (let i = 0; i < 3; i++) { min[i] = Math.min(min[i], lo[i]); max[i] = Math.max(max[i], hi[i]); }
   }
   return any ? { min, max } : null;
 }

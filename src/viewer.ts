@@ -5,6 +5,7 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { Model, Placed } from './compiler';
 import { COLOR_BY_ID } from './catalog';
+import { unitParts, UNITS, WHEEL_TOP, WHEEL_DROP } from './specials';
 import { Pile, Loose, LooseSpec } from './pile';
 
 export type Look = 'studio' | 'dramatic';
@@ -101,13 +102,19 @@ export class Viewer {
         sheen: 0.15, sheenRoughness: 0.6, envMapIntensity: this.look === 'studio' ? 1 : 0.35,
         emissive: mode === 'new' ? new THREE.Color(0xffffff) : new THREE.Color(0x000000), emissiveIntensity: mode === 'new' ? 0.16 : 0,
       });
+      m.onBeforeCompile = sh => {            // vertices with aFixed.a = 1 keep their own colour (a tyre stays black whatever colour the holder is)
+        sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nattribute vec4 aFixed;\nvarying vec4 vFixed;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvFixed = aFixed;');
+        sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\nvarying vec4 vFixed;').replace('#include <color_fragment>', '#include <color_fragment>\ndiffuseColor.rgb = mix(diffuseColor.rgb, vFixed.rgb, vFixed.a);');
+      };
       this.mats.set(k, m);
     }
     return m;
   }
-  private geometry(p: { fx: number; fz: number; h: number }): THREE.BufferGeometry {
-    const k = `${p.fx}x${p.fz}x${p.h}`;
+  private geometry(p: { part?: string; fx: number; fz: number; h: number; special?: { facing: '+x' | '-x' | '+z' | '-z'; accent?: string } }): THREE.BufferGeometry {
+    const unit = p.special && p.part?.startsWith('unit-') ? p.part.slice(5) : '';
+    const k = `${p.fx}x${p.fz}x${p.h}|${unit}|${p.special?.facing ?? ''}|${p.special?.accent ?? ''}`;
     let g = this.geoms.get(k);
+    if (!g && unit && UNITS[unit]) { g = this.specialGeometry(unit, p.special!.facing, p.special!.accent, p.fx, p.fz, p.h); this.geoms.set(k, g); }
     if (!g) {
       const gap = 0.03, W = p.fx - gap, D = p.fz - gap, H = p.h * PLATE - 0.01;
       const body = new RoundedBoxGeometry(W, H, D, 3, Math.min(0.05, H / 4));
@@ -119,9 +126,42 @@ export class Viewer {
       }
       const merged = mergeGeometries(parts.map(x => x.index ? x.toNonIndexed() : x), false)!;
       parts.forEach(x => x.dispose());
+      merged.setAttribute('aFixed', new THREE.BufferAttribute(new Float32Array(merged.attributes.position.count * 4), 4));
       g = merged; this.geoms.set(k, g);
     }
     return g;
+  }
+  /** A real unit (wheel holder with hub and tyre, window frame with glass, door with frame): the true LDraw shapes plus the studs on top.
+   *  Origin = centre of the unit's footprint, halfway up its height, like an ordinary part. Hub, tyre, glass and leaf keep their own colours. */
+  private specialGeometry(unit: string, facing: '+x' | '-x' | '+z' | '-z', accent: string | undefined, fx: number, fz: number, h: number): THREE.BufferGeometry {
+    const def = UNITS[unit], parts: THREE.BufferGeometry[] = [];
+    const lower = def.cls === 'hang' ? WHEEL_TOP - WHEEL_DROP : 0;     // closes the last 0.1 stud so a tyre touches the baseplate
+    for (const up of unitParts(unit, facing)) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(up.positions.slice(), 3));
+      g.computeVertexNormals();                                          // non-indexed: flat shading, like the moulded part
+      const n = up.positions.length / 3, fixed = new Float32Array(n * 4);
+      const colour = up.colour === 'accent' ? (accent ?? up.accentDefault ?? 'light_gray') : up.colour;
+      if (colour) { const c = new THREE.Color(COLOR_BY_ID[colour].hex); for (let i = 0; i < n; i++) fixed.set([c.r, c.g, c.b, 1], i * 4); }
+      g.setAttribute('aFixed', new THREE.BufferAttribute(fixed, 4));
+      parts.push(g);
+    }
+    // studs: every cell of the top for frames and holders; only the high row for a slope (the other row is the slope face)
+    const backRow = (i: number, j: number) => {
+      if (def.studs !== 'back') return true;
+      return facing === '+z' ? j === 0 : facing === '-z' ? j === fz - 1 : facing === '+x' ? i === 0 : i === fx - 1;
+    };
+    if (def.studs !== false) for (let i = 0; i < fx; i++) for (let j = 0; j < fz; j++) {
+      if (!backRow(i, j)) continue;
+      const st = new THREE.CylinderGeometry(STUD_R, STUD_R, STUD_H, 20).toNonIndexed(); st.deleteAttribute('uv');
+      st.translate(-fx / 2 + i + 0.5, STUD_H / 2 - 0.005, -fz / 2 + j + 0.5);
+      st.setAttribute('aFixed', new THREE.BufferAttribute(new Float32Array(st.attributes.position.count * 4), 4));
+      parts.push(st);
+    }
+    const merged = mergeGeometries(parts, false)!;
+    parts.forEach(x => x.dispose());
+    merged.translate(0, (h * PLATE) / 2 - lower, 0);
+    return merged;
   }
   brickMesh(p: LooseSpec): THREE.Mesh {
     const m = new THREE.Mesh(this.geometry(p), this.material(p.color));
@@ -139,6 +179,7 @@ export class Viewer {
     for (const c of [...this.base.children]) { this.base.remove(c); (c as THREE.Mesh).geometry?.dispose(); }
     if (!model) return;
     this.off.set(-model.size[0] / 2, 0, -model.size[1] / 2);
+    this.root.position.y = this.ghostRoot.position.y = model.lift ?? 0;     // wheel units hang below the body: stand it up so the tyres touch the baseplate
     for (const p of model.parts) {
       const m = new THREE.Mesh(this.geometry(p), this.material(p.color));
       m.position.copy(this.position(p)); m.castShadow = true; m.receiveShadow = true; m.userData.id = p.id;

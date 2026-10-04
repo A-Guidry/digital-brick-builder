@@ -1,5 +1,7 @@
 import { PARTS, PART_BY_ID, resolveColor, COLORS, PLATES_PER_STUD, BRICK_H } from './catalog';
 import { ShapeSpec, expand, specBounds, inside } from './shapes';
+import { unitsOf } from './features';
+import { UNITS, unitFootprint } from './specials';
 
 export interface Placed {
   id: number;
@@ -8,6 +10,7 @@ export interface Placed {
   x: number; y: number; z: number; // min corner: studs, studs, plates
   fx: number; fz: number;          // footprint in studs after rotation
   h: number;                       // height in plates
+  special?: { facing: '+x' | '-x' | '+z' | '-z'; accent?: string };   // a real non-rectangular part (wheel unit, window, door): which way it faces, and its second colour
 }
 export interface Model {
   name: string;
@@ -15,10 +18,17 @@ export interface Model {
   size: [number, number, number];  // studs x, studs z, plates y
   origin: [number, number, number]; // spec-space stud coords of grid cell (0,0,0) corner: x, y(studs), z
   variant: number;
+  lift?: number;                   // studs the whole model stands above the baseplate (wheel units hang below the body)
+  unplaced?: string[];             // real-part units the AI asked for that could not be put in the model (plain-English, reported by the validator)
 }
-export interface Grid { nx: number; ny: number; nz: number; cells: Uint8Array; palette: string[]; origin: [number, number, number]; plateOnly?: Uint8Array; forced?: { x: number; y: number; z: number; fx: number; fz: number; color: number }[]; }
+export interface Grid { nx: number; ny: number; nz: number; cells: Uint8Array; palette: string[]; origin: [number, number, number]; plateOnly?: Uint8Array; forced?: { x: number; y: number; z: number; fx: number; fz: number; color: number }[];
+  /** Volumes taken by real-part units (wheel holders, windows, doors): the packer leaves them alone and the real part is added instead. */
+  unplaced?: string[];
+  fixed?: { x: number; y: number; z: number; fx: number; fz: number; h: number; color: number; special: { unit: string; facing: '+x' | '-x' | '+z' | '-z'; accent?: string } }[]; }
 
 const idx = (g: Grid, x: number, y: number, z: number) => (y * g.nz + z) * g.nx + x;
+
+const niceName = (unit: string) => (unit.startsWith('window') ? 'window' : unit === 'windscreen' ? 'windshield' : unit.startsWith('slope') ? 'slope' : unit);
 
 /** Turn shapes into a voxel grid (1 stud x 1 stud x 1 plate). */
 export function voxelize(spec: ShapeSpec): Grid {
@@ -47,6 +57,50 @@ export function voxelize(spec: ShapeSpec): Grid {
         if (s.op === 'add') v = c; else if (s.op === 'subtract') v = 0; else if (v) v = c;
       }
       cells[idx(g, x, y, z)] = v;
+    }
+  }
+  // Real-part units (wheel holders, windows, doors): reserve their volume so the packer places the real part and nothing else there.
+  for (const u of unitsOf(spec.features, !!spec.mirror_x)) {
+    const def = UNITS[u.unit], { fx, fz, h } = unitFootprint(u.unit, u.facing), alongZ = u.facing === '+z' || u.facing === '-z';
+    let x: number, z: number, y: number;
+    if (def.cls === 'hang') {                                           // wheel holder: centred under the body, its top at the height the tyre needs
+      x = Math.round(u.cx - fx / 2 - ox); z = Math.round(u.cz - fz / 2 - oz); y = Math.round((u.topY - h * 0.4 - oy) * PLATES_PER_STUD);
+    } else if (def.cls === 'block') {                                   // a plain block (slope): its footprint corner is where the AI said, no wall to find
+      x = Math.round(u.at[0] - fx / 2 - ox); z = Math.round(u.at[2] - fz / 2 - oz); y = Math.round((u.at[1] - oy) * PLATES_PER_STUD);
+    } else {                                                            // wall unit: fills the opening just inside the wall's outer surface
+      y = Math.round((u.at[1] - oy) * PLATES_PER_STUD - (def.anchorY === 'bottom' ? 0 : h / 2));
+      const plus = u.facing === '+z' || u.facing === '+x';
+      const first = alongZ ? (plus ? Math.floor(u.at[2] - 1e-6) : Math.floor(u.at[2] + 1e-6)) - oz : (plus ? Math.floor(u.at[0] - 1e-6) : Math.floor(u.at[0] + 1e-6)) - ox;
+      const lat = alongZ ? Math.round(u.at[0] - fx / 2 - ox) : Math.round(u.at[2] - fz / 2 - oz);
+      // the AI's surface can be a little off: use the outermost layer near it that actually has wall behind the opening
+      const hasWall = (layer: number) => {
+        for (let dy = 0; dy < h; dy++) for (let k = 0; k < (alongZ ? fx : fz); k++) {
+          const X = alongZ ? lat + k : layer, Z = alongZ ? layer : lat + k, Y = y + dy;
+          if (X >= 0 && Z >= 0 && Y >= 0 && X < nx && Z < nz && Y < ny && cells[idx(g, X, Y, Z)]) return true;
+        }
+        return false;
+      };
+      const layer = [first, first + (plus ? -1 : 1), first + (plus ? 1 : -1)].find(hasWall) ?? first;
+      if (alongZ) { x = lat; z = plus ? layer - fz + 1 : layer; } else { z = lat; x = plus ? layer - fx + 1 : layer; }
+    }
+    if (def.cls === 'wall' && y + h > ny && y < ny && ny >= h) y = ny - h;           // asked too high: slide down just enough to fit inside the wall
+    const clash = (g.fixed ?? []).find(f => x < f.x + f.fx && f.x < x + fx && z < f.z + f.fz && f.z < z + fz && y < f.y + f.h && f.y < y + h);
+    if (clash) {
+      (g.unplaced ??= []).push(`The ${niceName(u.unit)} at (${u.at.map(v => +v.toFixed(1)).join(', ')}) overlaps the ${niceName(clash.special.unit)} already placed there: move one of them.`);
+      continue;
+    }
+    if (x < 0 || z < 0 || y < 0 || x + fx > nx || z + fz > nz || y + h > ny) {
+      (g.unplaced ??= []).push(`The ${niceName(u.unit)} at (${u.at.map(v => +v.toFixed(1)).join(', ')}) facing ${u.facing} is not on the model: put it on the outer surface of a wall or body that is there.`);
+      continue;
+    }
+    const ci = cid(def.parts[0].colour ?? u.color);
+    for (let dy = 0; dy < h; dy++) for (let dz = 0; dz < fz; dz++) for (let dx = 0; dx < fx; dx++) cells[idx(g, x + dx, y + dy, z + dz)] = ci;
+    (g.fixed ??= []).push({ x, y, z, fx, fz, h, color: ci, special: { unit: u.unit, facing: u.facing, ...(u.accent ? { accent: u.accent } : {}) } });
+    if (def.cls === 'hang') {                                           // short posts in the body's colour from the holder up to the body, so a body that sits a little high is still attached
+      for (let dz = 0; dz < fz; dz++) for (let dx = 0; dx < fx; dx++) {
+        let up = y + h; while (up < ny && !cells[idx(g, x + dx, up, z + dz)]) up++;
+        if (up < ny && up > y + h) { const c = cells[idx(g, x + dx, up, z + dz)]; for (let k = y + h; k < up; k++) cells[idx(g, x + dx, k, z + dz)] = c; }
+      }
     }
   }
   return g;
@@ -165,10 +219,13 @@ export function packGrid(g: Grid, name = 'Model', variant = 0): Model {
       }
     }
   };
+  const fixedMask = new Uint8Array(g.cells.length);
+  for (const f of g.fixed ?? []) for (let dy = 0; dy < f.h; dy++) for (let dz = 0; dz < f.fz; dz++) for (let dx = 0; dx < f.fx; dx++) fixedMask[idx(g, f.x + dx, f.y + dy, f.z + dz)] = 1;
   for (let r = 0; r * BRICK_H < g.ny; r++) {
     const y0 = r * BRICK_H;
     const solid = (x: number, z: number) => {
       if (y0 + BRICK_H > g.ny) return 0;
+      if (fixedMask[idx(g, x, y0, z)] || fixedMask[idx(g, x, y0 + 1, z)] || fixedMask[idx(g, x, y0 + 2, z)]) return 0;
       const a = g.cells[idx(g, x, y0, z)];
       if (!a) return 0;
       if (g.plateOnly && (g.plateOnly[idx(g, x, y0, z)] || g.plateOnly[idx(g, x, y0 + 1, z)] || g.plateOnly[idx(g, x, y0 + 2, z)])) return 0;
@@ -190,10 +247,12 @@ export function packGrid(g: Grid, name = 'Model', variant = 0): Model {
         for (let dz = 0; dz < f.fz; dz++) for (let dx = 0; dx < f.fx; dx++) fmask[(f.z + dz) * g.nx + f.x + dx] = 1;
         parts.push({ id: id++, part: `plate-${Math.min(f.fx, f.fz)}x${Math.max(f.fx, f.fz)}`, color: g.palette[f.color], x: f.x, y: y0 + k, z: f.z, fx: f.fx, fz: f.fz, h: 1 });
       }
-      layer(y0 + k, (x, z) => (brickCells[z * g.nx + x] || fmask[z * g.nx + x] ? 0 : g.cells[idx(g, x, y0 + k, z)]), PLATE_RECTS, r * BRICK_H + k);
+      layer(y0 + k, (x, z) => (brickCells[z * g.nx + x] || fmask[z * g.nx + x] || fixedMask[idx(g, x, y0 + k, z)] ? 0 : g.cells[idx(g, x, y0 + k, z)]), PLATE_RECTS, r * BRICK_H + k);
     }
   }
-  return { name, parts, size: [g.nx, g.nz, g.ny], origin: g.origin, variant };
+  for (const f of g.fixed ?? []) parts.push({ id: id++, part: `unit-${f.special.unit}`, color: g.palette[f.color], x: f.x, y: f.y, z: f.z, fx: f.fx, fz: f.fz, h: f.h, special: { facing: f.special.facing, ...(f.special.accent ? { accent: f.special.accent } : {}) } });
+  const lift = (g.fixed ?? []).some(f => UNITS[f.special.unit].cls === 'hang') ? +g.origin[1].toFixed(2) : undefined;
+  return { name, parts, size: [g.nx, g.nz, g.ny], origin: g.origin, variant, ...(lift ? { lift } : {}), ...(g.unplaced?.length ? { unplaced: g.unplaced } : {}) };
 }
 
 export function compileSpec(spec: ShapeSpec, variant = 0, opts: { prune?: boolean; support?: boolean } = {}): { model: Model; grid: Grid; removed: number; supported: number } {

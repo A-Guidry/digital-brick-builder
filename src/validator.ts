@@ -2,7 +2,7 @@ import { Model, Placed, specCoord } from './compiler';
 import { PART_BY_ID, COLOR_BY_ID } from './catalog';
 
 export interface Problem {
-  code: 'overlap' | 'unknown_part' | 'unknown_color' | 'disconnected' | 'build_order' | 'too_big' | 'empty';
+  code: 'overlap' | 'unit_not_placed' | 'unknown_part' | 'unknown_color' | 'disconnected' | 'build_order' | 'too_big' | 'empty';
   message: string;
   partIds: number[];
   at?: [number, number, number]; // spec-space studs
@@ -67,6 +67,7 @@ export function validate(model: Model): Report {
     if (!PART_BY_ID[p.part]) problems.push({ code: 'unknown_part', message: `Part "${p.part}" is not in the catalog`, partIds: [p.id] });
     if (!COLOR_BY_ID[p.color]) problems.push({ code: 'unknown_color', message: `Colour "${p.color}" is not a real LEGO colour`, partIds: [p.id] });
   }
+  for (const msg of model.unplaced ?? []) problems.push({ code: 'unit_not_placed', message: msg, partIds: [] });
   const c = contacts(parts);
   for (const [a, b, p] of c.overlaps) problems.push({ code: 'overlap', message: `Parts ${a} and ${b} occupy the same space`, partIds: [a, b], at: specCoord(model, p) });
 

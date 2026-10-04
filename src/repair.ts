@@ -34,6 +34,7 @@ export function bridge(grid: Grid, model: Model): number {
   const I = (x: number, y: number, z: number) => (y * grid.nz + z) * grid.nx + x;
   grid.forced ??= [];
   const used = new Set(grid.forced.flatMap(f => [`${f.x},${f.y},${f.z}`, `${f.x + f.fx - 1},${f.y},${f.z + f.fz - 1}`]));
+  const inUnit = (x: number, y: number, z: number) => (grid.fixed ?? []).some(f => x >= f.x && x < f.x + f.fx && y >= f.y && y < f.y + f.h && z >= f.z && z < f.z + f.fz);
   let fixes = 0;
   for (let gi = 1; gi < gs.length; gi++) {
     let best: { a: [number, number, number]; b: [number, number, number]; y: number; rank: number } | null = null;
@@ -41,6 +42,7 @@ export function bridge(grid: Grid, model: Model): number {
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const X = x + dx, Z = z + dz;
         if (owner.get(`${X},${y},${Z}`) !== 0) continue;
+        if (inUnit(x, y, z) || inUnit(X, y, Z)) continue;                    // never put a bridge plate inside a real part (a window, a door)
         if (used.has(`${x},${y},${z}`) || used.has(`${X},${y},${Z}`)) continue;
         const belowOk = owner.get(`${x},${y - 1},${z}`) === gi && owner.get(`${X},${y - 1},${Z}`) === 0;
         const aboveOk = owner.get(`${x},${y + 1},${z}`) === gi && owner.get(`${X},${y + 1},${Z}`) === 0;

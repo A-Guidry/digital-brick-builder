@@ -74,3 +74,30 @@ Findings that are NOT fixed (decisions for the owner):
 - Blind test 1 (shape-count Detailed): 5 Detailed, 4 Simple, 1 tie. Wins tracked size, not detail.
 - Blind test 2 (old Simple vs catalog Detailed, 7 subjects): 6 Detailed, 0 Simple, 1 tie. Detailed is now the default (`settings.detail = 'high'`).
 - Tests: 231 unit, 82 server, 150/150 browser.
+
+## 2026-10-03: gap fixes after the parts catalog
+- **Local model was effectively unusable**: it is a thinking model, and neither the proxy nor the app turned thinking off. Same house request: 129 s with no answer (all 8192 tokens spent reasoning) before; valid JSON in ~30 s after (busy GPU). Fix: `reasoning_effort: "none"` in the proxy (both plain and streaming requests) and in the app for Ollama/gateway ports only (`localExtras`). Proxy deployed to the VPS (backup `/root/proxy.mjs.pre-nothink.bak`, md5 matches repo). Still saturated by claude-mem: GPU ~92% busy.
+- **Look-check false alarms**: 41% of verdict sentences said floating/detached/baseplate, and 41% of builds were rebuilt. Now a "floating"-only complaint with nothing real missing counts as a pass (`critic.ts`, mutation-checked).
+- **Wheels**: size 4 came out square, 6 round. Default is now 5 and the catalog tells the AI to use 5+.
+- **Scale numbers** (real models scaled in place): parts grow about 2.5-3x per doubling for thin-walled models (46 -> 132 -> 378; 44 -> 110), but repair time grows faster than parts (253 parts took 8.4 s). Larger scales also broke connectivity more often.
+- **New tool** `server/usage.sh [--days N] [--json]`: requests, success rate, upstream and model mix, pool exhaustions, latency, from the proxy log (counts only). First reading, 2 days: 153 requests, 66% ok, 49 rate-limited (429), Gemini pool exhausted 12x, p95 60 s (includes testing traffic).
+- Phone checks (390x844, 360x640, 844x390): no overflow, no small targets, no errors.
+
+## 2026-10-03: real parts (wheel unit) and the part library
+- **Real wheel unit.** A `wheel` feature is now one real assembly mined from the OMR models (holder 4488 + hub 6014b + tyre 6015, exact offsets from a real Tow Truck), drawn from the true LDraw shapes (`src/specials.json`, baked by `tools/export-specials.py`). The holder is a real catalog part (`plate-wheel`, never offered to the packer); the shopping list adds the hub and tyre. The body may start at 1.6 or higher; a short post in the body colour joins a body that sits higher. Wheels hang below, so the model carries `lift` and stands on the baseplate. 19 new unit tests (6 mutations caught), 4 browser checks.
+- **Part library, nothing picked by hand.** `tools/build-atlas.py` pulls every distinct part out of the model files and the dataset: 4,599 distinct parts used, 2,743 exported at 3+ uses (51 MB, `~/Projects/lego-data/atlas-v1`, 3 s). Your folder alone uses 1,016 of them. 10 Studio `.io` files are password-protected and were left alone.
+- Real Gemini builds (sports car, bus, truck, police car) use the wheel units and build valid.
+- Tests: 253 unit, 83 server, 154/154 browser.
+
+## 2026-10-03: every real part is a row of data (units)
+- **tools/units.json** lists real assemblies (anchor part + companions). **tools/build-units.py** mines each companion's exact offset and turn from the OMR models (the wheel's 108/74 sightings reproduced automatically) and bakes the true LDraw shapes into `src/specials.json` (105 KB). Units today: wheel (4488+6014b+6015), window 2x2/2x3/4x3 (60592/60593/60594 + glass), windscreen 3823, door (frame 60596 + leaf 60623). Adding a part = one line in units.json + `uv run --with numpy tools/build-units.py`.
+- **Engine, generic**: `unitsOf()` places units from the AI's features; the compiler reserves each unit's volume (`Grid.fixed`), masks it from the packer, and adds the real part. Wall units go in the outermost wall layer near the asked-for surface (tolerates a stud of error) and slide down to fit; clashes and missing walls come back to the AI as plain-English problems (`unit_not_placed`). Repair bridge plates never enter a real part (real Gemini police car found this).
+- **Viewer/BOM generic**: real shapes with fixed colours per part (tyre, glass, leaf), studs added, shopping list includes companions (door leaf in its own colour). Two glass colours added to the palette (Trans-Light Blue BL 15, Trans-Clear BL 12).
+- **Real Gemini**: 8 of 8 vehicle/building prompts built valid with real parts; average 4.5 AI calls and 43 s per build (above the 30 s target). 
+- Tests: 297 unit (every unit is covered by table-driven tests; 13 deliberate breakages caught), 83 server, 154/154 browser.
+
+## 2026-10-03: real slopes and roofs
+- Units added to `tools/units.json`: slope-4 (3037), slope-2 (3039), slope-1 (3040), class `block` (placed where asked, no wall to find). A `slope` feature places one (facing = the way it goes down; size 1/2/4 wide).
+- `roof` is now real: stepped courses of real slopes on both long edges (each course 3 plates up and 2 studs in) over a plain brick core with a 2-wide ridge cap; width made even and >= 4; height follows from the width; facing +x/-x turns the ridge. The model bounds now include block parts.
+- Real Gemini: 6 of 6 buildings (house, castle, fire station, cottage, barn, garage) valid, 3.7 AI calls and 39 s on average.
+- Tests: 337 unit (7 deliberate breakages caught), 83 server, 154/154 browser.

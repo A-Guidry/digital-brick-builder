@@ -666,3 +666,21 @@ test('GEMINI-FIRST far more than the pool can carry: the excess gets a friendly 
     const body = await limited[0].json(); assert.match(body.error, /try again in about \d+ seconds/); assert.ok(Number(limited[0].headers.get('retry-after')) >= 5);
   } finally { await s.close(); }
 });
+
+
+test('local model: thinking is switched off on both the plain and the streaming request (a thinking model burns its whole budget before it answers)', async () => {
+  const s = await start({ UPSTREAM: 'qwen' });                       // plain path
+  try {
+    assert.equal((await s.post(REQ)).status, 200);
+    const plain = s.up.seen.filter(x => x.url.includes('/chat/completions'));
+    assert.ok(plain.length > 0);
+    for (const q of plain) assert.equal(q.body.reasoning_effort, 'none', 'plain request: ' + JSON.stringify(q.body).slice(0, 100));
+  } finally { await s.close(); }
+  const a = await startAuto({ env: { AUTO_PRIMARY: 'local' } });     // streaming path
+  try {
+    assert.equal((await a.post(guestHdr(1))).status, 200);
+    const streamed = a.q.seen.filter(x => x.url.includes('/chat/completions'));
+    assert.ok(streamed.length > 0 && streamed.every(q => q.body.stream === true));
+    for (const q of streamed) assert.equal(q.body.reasoning_effort, 'none', 'streaming request: ' + JSON.stringify(q.body).slice(0, 100));
+  } finally { await a.close(); }
+});

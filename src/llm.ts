@@ -165,6 +165,11 @@ async function completeShared(s: Settings, system: string, msgs: Msg[], signal?:
   return j.text;
 }
 
+/** Ollama and our local gateway are thinking-model hosts that accept reasoning_effort; other servers are sent nothing extra so none of them can reject the request. */
+export function localExtras(url: string): Record<string, string> {
+  try { const u = new URL(url); return ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname) && ['11434', '11435', '11436'].includes(u.port) ? { reasoning_effort: 'none' } : {}; } catch { return {}; }
+}
+
 export async function complete(s: Settings, system: string, msgs: Msg[], signal?: AbortSignal, opts: { preferGemini?: boolean } = {}): Promise<string> {
   const missing = missingSetting(s); if (missing) throw new Error(missing);
   if (s.provider === 'shared') return completeShared(s, system, msgs, signal, opts.preferGemini ? 'gemini' : undefined);   // pictures need Gemini, not the Mac's text model
@@ -212,7 +217,7 @@ export async function complete(s: Settings, system: string, msgs: Msg[], signal?
     r = await fetch(`${base}/chat/completions`, {
       method: 'POST', signal, headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: s.localModel, stream: false, temperature: 0.4,
+        model: s.localModel, stream: false, temperature: 0.4, ...localExtras(s.localUrl),
         messages: [{ role: 'system', content: system }, ...msgs.map(m => ({ role: m.role, content: m.image
           ? [{ type: 'image_url', image_url: { url: `data:${m.image.mime};base64,${m.image.base64}` } }, { type: 'text', text: m.text }]
           : m.text }))],

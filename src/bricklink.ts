@@ -1,5 +1,5 @@
 import { Model } from './compiler';
-import { PART_BY_ID, COLOR_BY_ID } from './catalog';
+import { PART_BY_ID, COLOR_BY_ID, SPECIAL_BY_ID } from './catalog';
 
 export interface Line { part: string; name: string; bl: string; color: string; colorName: string; blColor: number; hex: string; qty: number }
 
@@ -10,6 +10,13 @@ export function partsList(model: Model): Line[] {
     const pd = PART_BY_ID[p.part], cd = COLOR_BY_ID[p.color];
     if (!m.has(k)) m.set(k, { part: p.part, name: pd.name, bl: pd.bl, color: p.color, colorName: cd.name, blColor: cd.bl, hex: cd.hex, qty: 0 });
     m.get(k)!.qty++;
+    // a wheel unit also needs its hub and tyre, in their own fixed colours
+    for (const x of SPECIAL_BY_ID[p.part]?.extras ?? []) {
+      const col = x.accent && p.special?.accent && COLOR_BY_ID[p.special.accent] ? p.special.accent : x.color;
+      const xk = `${x.bl}|${col}`, xc = COLOR_BY_ID[col];
+      if (!m.has(xk)) m.set(xk, { part: `extra-${x.bl}`, name: x.name, bl: x.bl, color: col, colorName: xc.name, blColor: xc.bl, hex: xc.hex, qty: 0 });
+      m.get(xk)!.qty++;
+    }
   }
   return [...m.values()].sort((a, b) => a.colorName.localeCompare(b.colorName) || a.name.localeCompare(b.name, undefined, { numeric: true }));
 }

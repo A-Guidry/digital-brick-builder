@@ -1,0 +1,197 @@
+{
+ "name": "Police car",
+ "mirror_x": true,
+ "shapes": [
+  {
+   "type": "box",
+   "color": "blue",
+   "center": [
+    0,
+    2.8,
+    0
+   ],
+   "size": [
+    10,
+    2.4,
+    20
+   ],
+   "op": "add"
+  },
+  {
+   "type": "box",
+   "op": "paint",
+   "color": "white",
+   "center": [
+    0,
+    2.8,
+    0
+   ],
+   "size": [
+    6,
+    2.6,
+    20.2
+   ]
+  },
+  {
+   "type": "box",
+   "color": "white",
+   "center": [
+    0,
+    5.2,
+    0
+   ],
+   "size": [
+    8.8,
+    4.8,
+    12
+   ],
+   "op": "add"
+  },
+  {
+   "type": "wedge",
+   "color": "white",
+   "center": [
+    0,
+    5.2,
+    6
+   ],
+   "size": [
+    8.8,
+    4.8,
+    3
+   ],
+   "slope": "+z",
+   "op": "add"
+  },
+  {
+   "type": "wedge",
+   "color": "white",
+   "center": [
+    0,
+    5.2,
+    -6
+   ],
+   "size": [
+    8.8,
+    4.8,
+    3
+   ],
+   "slope": "-z",
+   "op": "add"
+  },
+  {
+   "type": "box",
+   "color": "red",
+   "center": [
+    0,
+    8.2,
+    -1
+   ],
+   "size": [
+    3,
+    1.2,
+    1.5
+   ],
+   "op": "add"
+  },
+  {
+   "type": "box",
+   "color": "blue",
+   "center": [
+    1.5,
+    8.2,
+    -1
+   ],
+   "size": [
+    3,
+    1.2,
+    1.5
+   ],
+   "op": "add"
+  }
+ ],
+ "features": [
+  {
+   "kind": "wheel",
+   "at": [
+    5,
+    0,
+    6
+   ],
+   "facing": "+x"
+  },
+  {
+   "kind": "wheel",
+   "at": [
+    5,
+    0,
+    -6
+   ],
+   "facing": "+x"
+  },
+  {
+   "kind": "windshield",
+   "at": [
+    0,
+    5.2,
+    4.6
+   ],
+   "facing": "+z"
+  },
+  {
+   "kind": "window",
+   "at": [
+    4.5,
+    5.2,
+    -3
+   ],
+   "size": [
+    2,
+    2.4
+   ],
+   "facing": "+x",
+   "color": "white"
+  },
+  {
+   "kind": "door",
+   "at": [
+    4.5,
+    1.6,
+    3
+   ],
+   "facing": "+x",
+   "color": "white",
+   "accent": "blue"
+  },
+  {
+   "kind": "headlight",
+   "at": [
+    3.5,
+    3,
+    10.1
+   ],
+   "size": 1.5,
+   "color": "yellow"
+  },
+  {
+   "kind": "taillight",
+   "at": [
+    3.5,
+    3,
+    -10.1
+   ],
+   "size": 1.5,
+   "color": "red"
+  },
+  {
+   "kind": "bumper",
+   "at": [
+    0,
+    1.6,
+    10.1
+   ],
+   "size": 10,
+   "color": "dark_gray"
+  }
+ ]
+}

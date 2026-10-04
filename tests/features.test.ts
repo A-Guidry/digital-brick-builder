@@ -12,14 +12,15 @@ const filled = (s: ShapeSpec) => { const g = voxelize(s); let n = 0; for (const 
 const cellsAbs = (s: ShapeSpec) => { const g = voxelize(s), out = new Set<string>(); for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) if (g.cells[(y * g.nz + z) * g.nx + x]) out.add(`${g.origin[0] + x}|${(g.origin[1] + y / 2.5).toFixed(2)}|${g.origin[2] + z}`); return out; };
 const diff = (a: ShapeSpec, b: ShapeSpec) => { const A = voxelize(a), B = voxelize(b); if (A.cells.length !== B.cells.length) return -1; let d = 0; for (let i = 0; i < A.cells.length; i++) if (A.palette[A.cells[i]] !== B.palette[B.cells[i]]) d++; return d; };
 
-const PAINT_KINDS = ['window', 'windshield', 'door', 'headlight', 'taillight', 'porthole', 'eye', 'spot', 'hoof'];
-const ADD_KINDS = FEATURE_KINDS.filter(k => !PAINT_KINDS.includes(k));
+const UNIT_KINDS = ['wheel', 'window', 'windshield', 'door', 'slope'];                 // real parts: tested in wheels.test.ts and units.test.ts
+const PAINT_KINDS = ['headlight', 'taillight', 'porthole', 'eye', 'spot', 'hoof'];
+const ADD_KINDS = FEATURE_KINDS.filter(k => !PAINT_KINDS.includes(k) && !UNIT_KINDS.includes(k));
 
 describe('parts catalog: every kind builds sane shapes', () => {
   it('the catalog has the parts people ask for', () => {
     for (const k of ['wheel', 'window', 'door', 'eye', 'headlight', 'windshield', 'roof', 'tower', 'wing', 'horn', 'ear', 'antenna']) expect(FEATURE_KINDS).toContain(k);
   });
-  for (const kind of FEATURE_KINDS) {
+  for (const kind of FEATURE_KINDS.filter(k => !UNIT_KINDS.includes(k))) {
     it(`${kind}: defaults give finite numbers and real colours`, () => {
       const shapes = expandFeatures([{ kind, at: [1, 2, 3] }]);
       expect(shapes.length).toBeGreaterThan(0);
@@ -79,7 +80,6 @@ describe('parts catalog: painted parts really show up, wherever the AI puts the 
 
 describe('parts catalog: added parts add material and join the model', () => {
   const placements: Record<string, { host: ShapeSpec; feat: Feature }> = {
-    wheel: { host: { name: 'car', shapes: [{ type: 'box', op: 'add', color: 'red', center: [0, 3, 0], size: [8, 3, 14] }] }, feat: { kind: 'wheel', at: [4.6, 2, 4], facing: '+x' } },
     ear: { host: host(), feat: { kind: 'ear', at: [3, 12, 0] } },
     horn: { host: host(), feat: { kind: 'horn', at: [0, 12, 0], size: 4 } },
     antenna: { host: host(), feat: { kind: 'antenna', at: [0, 12, 0], size: 4 } },
@@ -107,7 +107,7 @@ describe('parts catalog: added parts add material and join the model', () => {
     });
   }
   it('the host alone builds the same way (so a failure above is the part, not the host)', async () => {
-    for (const h of [host(), placements.wheel.host, placements.tree.host]) expect((await solid(h)).ok).toBe(true);
+    for (const h of [host(), placements.tree.host]) expect((await solid(h)).ok).toBe(true);
   });
   it('every added kind has a placement in this test (nothing in the catalog goes untested)', () => {
     expect(Object.keys(placements).sort()).toEqual([...ADD_KINDS].sort());
@@ -119,20 +119,6 @@ describe('parts catalog: added parts add material and join the model', () => {
     const turned: ShapeSpec = { ...host(), features: [{ kind: 'roof', at: [0, 12, 0], size: [16, 5, 12], facing: '+x' }] };
     const t = voxelize(turned); const top2 = (x: number, z: number) => { for (let y = t.ny - 1; y >= 0; y--) if (t.cells[(y * t.nz + z) * t.nx + x]) return y; return -1; };
     expect(top2(8, Math.floor(t.nz / 2))).toBeGreaterThan(top2(8, 0) + 3);
-  });
-  it('wheels are round discs of the tyre colour with a hub, and sit on the side they were told to', () => {
-    const car: ShapeSpec = { name: 'car', shapes: [{ type: 'box', op: 'add', color: 'red', center: [0, 3, 0], size: [8, 3, 14] }], features: [{ kind: 'wheel', at: [4.6, 2, 4], facing: '+x', size: 4 }, { kind: 'wheel', at: [-4.6, 2, 4], facing: '-x', size: 4 }] };
-    const g = voxelize(car); const colours = new Set<string>(); for (const c of g.cells) if (c) colours.add(g.palette[c]);
-    expect(colours.has('black') && colours.has('light_gray')).toBe(true);
-    const b = specBounds(car)!; expect(b.max[0]).toBeGreaterThan(5); expect(b.min[0]).toBeLessThan(-5);
-    expect(b.min[1]).toBeCloseTo(0, 5);   // the tyre touches the ground
-  });
-  it('the hub is a small centre, not most of the wheel (a tyre must read as a tyre)', () => {
-    for (const dia of [3, 4, 5, 6]) {
-      const g = voxelize({ name: 'w', shapes: expandFeatures([{ kind: 'wheel', at: [0, dia / 2, 0], facing: '+x', size: dia }]) as any });
-      const n: Record<string, number> = {}; for (const c of g.cells) if (c) n[g.palette[c]] = (n[g.palette[c]] ?? 0) + 1;
-      expect(n.black, `dia ${dia}`).toBeGreaterThan(2 * (n.light_gray ?? 0));
-    }
   });
   it('a window painted on a tower works even when it is listed before the tower', () => {
     const spec: ShapeSpec = { name: 't', shapes: [{ type: 'box', op: 'add', color: 'tan', center: [0, 0.5, 0], size: [8, 1, 8] }], features: [{ kind: 'window', at: [0, 5, 2], size: 2 }, { kind: 'tower', at: [0, 1, 0], size: 4 }] };
@@ -210,10 +196,10 @@ describe('parts catalog: the AI cannot break it', () => {
 describe('parts catalog: mirror_x', () => {
   const body = { name: 'm', mirror_x: true, shapes: [{ type: 'box', op: 'add', color: 'tan', center: [0, 3, 0], size: [10, 6, 10] }] };
   it('a part off the centre line is mirrored, a part on it is not doubled', () => {
-    const both = parseSpec({ ...body, features: [{ kind: 'eye', at: [3, 4, 5] }, { kind: 'door', at: [0, 0, 5] }] }); expect(both.ok).toBe(true);
+    const both = parseSpec({ ...body, features: [{ kind: 'eye', at: [3, 4, 5] }, { kind: 'spot', at: [0, 4, 5] }] }); expect(both.ok).toBe(true);
     if (!both.ok) return;
     const n = (k: string) => expand(both.spec).filter(s => s.op === 'paint').length;
-    expect(n('x')).toBe(2 * 2 + 1 + 2 /* eye: 2 shapes x 2 sides; door: frame on the line once, handle off the line twice */);
+    expect(n('x')).toBe(2 * 2 + 1 /* eye: 2 shapes x 2 sides; spot on the centre line: 1 shape, not doubled */);
   });
   it('a wedge-based part keeps its slope flipped on the mirrored side', () => {
     const r = parseSpec({ ...body, features: [{ kind: 'wing', at: [5, 2, 0], facing: '+x', size: 5 }] }); expect(r.ok).toBe(true);

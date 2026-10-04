@@ -278,3 +278,12 @@ describe('Gemini with no key of your own: it just works through the site (the ke
     expect(f.mock.calls.map(c => String(c[0]))).toEqual(['https://proxy.example/healthz', 'https://proxy.example/v1/ai']);
   });
 });
+
+
+describe('local servers: switch thinking off only where it is known to be safe', () => {
+  it('Ollama and the local gateway (default ports) get reasoning_effort none; an unknown server is sent nothing extra', async () => {
+    const { localExtras } = await import('../src/llm');
+    for (const u of ['http://localhost:11434/v1', 'http://127.0.0.1:11436/v1/', 'http://localhost:11435/v1']) expect(localExtras(u), u).toEqual({ reasoning_effort: 'none' });
+    for (const u of ['http://localhost:1234/v1', 'http://localhost:8080/v1', 'https://example.com/v1', 'not a url', '']) expect(localExtras(u), u).toEqual({});
+  });
+});

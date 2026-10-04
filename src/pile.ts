@@ -6,7 +6,7 @@ import { COLOR_BY_ID } from './catalog';
 const PLATE = 0.4;
 /** Feel of the tray. Stirring pushes with a speed (not just a force) so heavy bricks move too, and the pile stays awake longer. */
 export const TUNE = { radius: 2.6, power: 45, kick: 16, maxSpeed: 2.4, lift: 1.2, friction: 0.35, restitution: 0.12, damping: 0.03, sleepSpeed: 0.3, sleepTime: 0.5 };
-export interface LooseSpec { part: string; color: string; fx: number; fz: number; h: number }
+export interface LooseSpec { part: string; color: string; fx: number; fz: number; h: number; special?: { facing: '+x' | '-x' | '+z' | '-z'; accent?: string } }
 export interface Loose extends LooseSpec { uid: number; mesh: THREE.Mesh; body: CANNON.Body; mass: number; held: boolean; flying: boolean }
 export type MeshFactory = (p: LooseSpec) => THREE.Mesh;
 
