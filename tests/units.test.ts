@@ -28,7 +28,10 @@ describe('every real unit in the data is sane (this table grows by itself when a
       expect(parts[0].tag).toBe('body'); expect(parts.length).toBe(u.parts.length);
       parts.forEach((p, i) => { expect(p.positions.length / 9).toBe(u.parts[i].n); for (const v of p.positions) expect(Number.isFinite(v)).toBe(true); });
       const b = bbox(parts[0].positions), [fw, fd, fh] = u.footprint;
-      if (name !== 'wheel') {                                               // (the wheel's footprint is its plate; its holder arms reach out beyond it)
+      if (u.overhang) {                                                     // trees and bushes: branches reach past the 2 x 2 base, never less than it, and stay centred on it
+        expect(b.size[0], `${name} width`).toBeGreaterThanOrEqual(fw - 0.2); expect(b.size[2], `${name} depth`).toBeGreaterThanOrEqual(fd - 0.2);
+        expect(Math.abs((b.lo[0] + b.hi[0]) / 2), `${name} centred in x`).toBeLessThan(0.4); expect(Math.abs((b.lo[2] + b.hi[2]) / 2), `${name} centred in z`).toBeLessThan(0.4);
+      } else if (name !== 'wheel') {                                        // (the wheel's footprint is its plate; its holder arms reach out beyond it)
         expect(Math.abs(b.size[0] - fw), `${name} width ${b.size[0]} vs ${fw}`).toBeLessThan(0.45);
         expect(Math.abs(b.size[2] - fd), `${name} depth ${b.size[2]} vs ${fd}`).toBeLessThan(0.45);
         expect(Math.abs(b.size[1] / 0.4 - fh), `${name} height ${b.size[1] / 0.4} plates vs ${fh}`).toBeLessThan(1.6);
@@ -49,7 +52,7 @@ describe('every real unit in the data is sane (this table grows by itself when a
       }
     });
     it(`${name}: for every side it faces, the cell footprint matches the turned real shape (width in x, depth in z)`, () => {
-      if (name === 'wheel') return;                                          // its holder arms reach beyond its 2 x 2 plate
+      if (name === 'wheel' || u.overhang) return;                            // holder arms and branches reach beyond the base
       for (const f of FACINGS) {
         const size = bbox(unitParts(name, f)[0].positions).size, fp = unitFootprint(name, f);
         expect(Math.abs(size[0] - fp.fx), `${name} ${f} x: shape ${size[0].toFixed(2)} vs footprint ${fp.fx}`).toBeLessThan(0.45);

@@ -80,6 +80,17 @@ export function unitsOf(features: Feature[] | undefined, mirror: boolean): UnitA
       const want = Array.isArray(f.size) ? f.size[0] : typeof f.size === 'number' ? f.size : 2;
       const unit = ['slope-1', 'slope-2', 'slope-4'].reduce((b, n) => (Math.abs(UNITS[n].footprint[0] - want) < Math.abs(UNITS[b].footprint[0] - want) ? n : b), 'slope-2');
       list = [{ unit, cls: 'block', facing, color: f.color ?? 'red', accent: null, cx: f.at[0], cz: f.at[2], topY: 0, at: f.at }];
+    } else if (f.kind === 'ear' || f.kind === 'horn') {
+      const colour = f.color ?? (f.kind === 'horn' ? 'yellow' : 'light_gray'), want = Array.isArray(f.size) ? f.size[0] : typeof f.size === 'number' ? f.size : f.kind === 'horn' ? 3.6 : 1.2;
+      const rounds = f.kind === 'horn' ? Math.min(7, Math.max(0, Math.round(want / 1.2) - 1)) : 0;      // 1.2 studs per 1 x 1 brick; the cone on top is the last 1.2
+      for (let k = 0; k <= rounds; k++) {
+        const at: Vec3 = [f.at[0], f.at[1] + 1.2 * k, f.at[2]];
+        list.push({ unit: k === rounds ? 'cone-1' : 'round-1', cls: 'block', facing: '+z', color: colour, accent: null, cx: at[0], cz: at[2], topY: 0, at });
+      }
+    } else if (f.kind === 'tree' || f.kind === 'bush') {
+      const trees = ['pine-small', 'fruit-tree', 'pine-large', 'cypress'], want = Array.isArray(f.size) ? f.size[0] : typeof f.size === 'number' ? f.size : 4.8;
+      const unit = f.kind === 'bush' ? 'bush' : trees.reduce((b, n) => (Math.abs(UNITS[n].footprint[2] * 0.4 - want) < Math.abs(UNITS[b].footprint[2] * 0.4 - want) ? n : b), trees[0]);
+      list = [{ unit, cls: 'block', facing: '+z', color: f.color ?? UNITS[unit].bodyDefault ?? 'green', accent: null, cx: f.at[0], cz: f.at[2], topY: 0, at: f.at }];
     } else if (f.kind === 'roof') list = roofPlan(f).units;
     const mirrorThis = mirror && Math.abs(f.at[0]) > 1e-6;            // a feature on the centre line is already symmetrical; a roof's two bands must not be doubled
     for (const u of list) {
@@ -152,13 +163,8 @@ const KINDS: Record<string, Kind> = {
     } },
   hoof: { paint: true, facings: ['+z'], at: 'the BOTTOM centre of the foot', doc: 'colours the bottom of a leg like a hoof or a shoe. size = width (default 2). color default dark_gray',
     build: r => { const s = Math.max(1.02, num(r.size, 2)), [x, y, z] = r.at; return [{ type: 'box', op: 'paint', color: r.color ?? 'dark_gray', center: [x, y + 0.33, z], size: [s, 0.67, s] }]; } },
-  ear: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the ear, on top of the head', doc: 'a pointed ear standing up. size default 2. color default light_gray (give it the head colour)',
-    build: r => { const s = num(r.size, 2); return [{ type: 'cone', color: r.color ?? 'light_gray', center: [...r.at] as Vec3, radius: Math.max(1.05, s * 0.5), length: Math.max(1.5, s * 1.3) }]; } },
-  horn: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the horn, on top of the head', doc: 'a tall thin horn (unicorn, rhino, narwhal). size = height (default 4). color default yellow',
-    build: r => {
-      const s = Math.max(2, num(r.size, 4)), [x, y, z] = r.at, c = r.color ?? 'yellow';
-      return [{ type: 'cone', color: c, center: [cell(x), y, cell(z)], radius: 1.3, length: s * 0.4 }, col(x, y, z, s, c)];
-    } },
+  ear: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the ear, on top of the head', doc: 'a REAL ear: one real 1 x 1 cone (4589). Use one per ear, or with mirror_x. color = the ear colour (give it the head colour)', build: () => [] },
+  horn: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the horn, on top of the head', doc: 'a REAL horn: a column of real 1 x 1 round bricks (3062b) capped by a real cone (4589), the way builders make a unicorn horn. size = height (default 3.6; 1.2 is a stub). color = the horn colour (default yellow)', build: () => [] },
   antenna: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the antenna', doc: 'a thin mast with a ball on top. size = height (default 3). color = mast, accent = ball',
     build: r => {
       const s = Math.max(1.5, num(r.size, 3)), [x, y, z] = r.at;
@@ -202,11 +208,8 @@ const KINDS: Record<string, Kind> = {
       }
       return out;
     } },
-  tree: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the trunk', doc: 'a tree with a trunk and a round crown. size = height (default 6). color = crown, accent = trunk',
-    build: r => {
-      const hgt = Math.max(3, num(r.size, 6)), [x, y, z] = r.at, cx = edge(x), cz = edge(z), tr = hgt * 0.4, cd = hgt * 0.65;
-      return [{ type: 'box', color: r.accent ?? 'reddish_brown', center: [cx, y + tr / 2, cz], size: [2, tr, 2] }, { type: 'sphere', color: r.color ?? 'green', center: [cx, y + tr + cd * 0.35, cz], size: [cd, cd * 1.05, cd] }];
-    } },
+  tree: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the tree, on top of the ground or a base', doc: 'a REAL tree, one moulded part on a 2 x 2 base: small pine 4.8 tall, fruit tree 7.2, large pine 8 or cypress 14. size = height in studs; the nearest real tree is used. color = the leaves (default green)', build: () => [] },
+  bush: { paint: false, facings: ['+z'], at: 'the BOTTOM centre of the bush, on top of the ground or a base', doc: 'a REAL bush (6064), one moulded part on a 2 x 2 base, 5.6 tall. color = the leaves (default green)', build: () => [] },
   flag: { paint: false, facings: H4, at: 'the BOTTOM centre of the flag pole', doc: 'a pole with a flag. facing = the way the flag flies; size = pole height (default 6). color = flag, accent = pole',
     build: r => {
       const d = DIRS[r.facing], h = Math.max(3, num(r.size, 6)), [x, y, z] = r.at, px = cell(x), pz = cell(z);

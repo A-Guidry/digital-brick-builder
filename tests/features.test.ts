@@ -12,7 +12,7 @@ const filled = (s: ShapeSpec) => { const g = voxelize(s); let n = 0; for (const 
 const cellsAbs = (s: ShapeSpec) => { const g = voxelize(s), out = new Set<string>(); for (let y = 0; y < g.ny; y++) for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) if (g.cells[(y * g.nz + z) * g.nx + x]) out.add(`${g.origin[0] + x}|${(g.origin[1] + y / 2.5).toFixed(2)}|${g.origin[2] + z}`); return out; };
 const diff = (a: ShapeSpec, b: ShapeSpec) => { const A = voxelize(a), B = voxelize(b); if (A.cells.length !== B.cells.length) return -1; let d = 0; for (let i = 0; i < A.cells.length; i++) if (A.palette[A.cells[i]] !== B.palette[B.cells[i]]) d++; return d; };
 
-const UNIT_KINDS = ['wheel', 'window', 'windshield', 'door', 'slope'];                 // real parts: tested in wheels.test.ts and units.test.ts
+const UNIT_KINDS = ['wheel', 'window', 'windshield', 'door', 'slope', 'ear', 'horn', 'tree', 'bush'];                 // real parts: tested in wheels.test.ts and units.test.ts
 const PAINT_KINDS = ['headlight', 'taillight', 'porthole', 'eye', 'spot', 'hoof'];
 const ADD_KINDS = FEATURE_KINDS.filter(k => !PAINT_KINDS.includes(k) && !UNIT_KINDS.includes(k));
 
@@ -80,8 +80,6 @@ describe('parts catalog: painted parts really show up, wherever the AI puts the 
 
 describe('parts catalog: added parts add material and join the model', () => {
   const placements: Record<string, { host: ShapeSpec; feat: Feature }> = {
-    ear: { host: host(), feat: { kind: 'ear', at: [3, 12, 0] } },
-    horn: { host: host(), feat: { kind: 'horn', at: [0, 12, 0], size: 4 } },
     antenna: { host: host(), feat: { kind: 'antenna', at: [0, 12, 0], size: 4 } },
     wing: { host: host(), feat: { kind: 'wing', at: [8, 3, 0], facing: '+x', size: 6 } },
     fin: { host: host(), feat: { kind: 'fin', at: [8, 0, 0], facing: '+x', size: 5 } },
@@ -89,7 +87,6 @@ describe('parts catalog: added parts add material and join the model', () => {
     roof: { host: host(), feat: { kind: 'roof', at: [0, 12, 0], size: [16, 5, 12] } },
     chimney: { host: host(), feat: { kind: 'chimney', at: [4, 12, 0], size: 3 } },
     battlement: { host: host(), feat: { kind: 'battlement', at: [0, 12, 5.5], size: 12, facing: '+z' } },
-    tree: { host: { name: 'ground', shapes: [{ type: 'box', op: 'add', color: 'green', center: [0, 0.5, 0], size: [10, 1, 10] }] }, feat: { kind: 'tree', at: [0, 1, 0], size: 8 } },
     flag: { host: host(), feat: { kind: 'flag', at: [0, 12, 0], size: 6, facing: '+x' } },
     bumper: { host: { name: 'car', shapes: [{ type: 'box', op: 'add', color: 'red', center: [0, 3, 0], size: [8, 3, 14] }] }, feat: { kind: 'bumper', at: [0, 1.5, 7], facing: '+z', size: 6 } },
   };
@@ -107,7 +104,7 @@ describe('parts catalog: added parts add material and join the model', () => {
     });
   }
   it('the host alone builds the same way (so a failure above is the part, not the host)', async () => {
-    for (const h of [host(), placements.tree.host]) expect((await solid(h)).ok).toBe(true);
+    for (const h of [host(), { name: 'ground', shapes: [{ type: 'box', op: 'add', color: 'green', center: [0, 0.5, 0], size: [10, 1, 10] }] } as ShapeSpec]) expect((await solid(h)).ok).toBe(true);
   });
   it('every added kind has a placement in this test (nothing in the catalog goes untested)', () => {
     expect(Object.keys(placements).sort()).toEqual([...ADD_KINDS].sort());
@@ -134,7 +131,7 @@ describe('parts catalog: one-stud pieces are exactly one stud wherever the decim
     for (let z = 0; z < g.nz; z++) for (let x = 0; x < g.nx; x++) if (g.cells[((g.ny - 1) * g.nz + z) * g.nx + x]) n++;
     return n;
   };
-  for (const kind of ['horn', 'flag']) it(`${kind}: the thin pole/column is one stud wide at any fractional position`, () => {
+  for (const kind of ['flag']) it(`${kind}: the thin pole/column is one stud wide at any fractional position`, () => {
     for (const x of [0, 0.25, 0.5, 0.75, 1, -2.5, 3.01, 3.99]) for (const z of [0, 0.5, -1.25, 2])
       expect(topLayer(kind, [x, 0, z], kind === 'flag' ? { facing: '+z' } : {}), `${kind} at ${x},${z}`).toBe(kind === 'flag' ? topLayer(kind, [0.5, 0, 0.5], { facing: '+z' }) : 1);
   });

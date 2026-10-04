@@ -101,3 +101,9 @@ Findings that are NOT fixed (decisions for the owner):
 - `roof` is now real: stepped courses of real slopes on both long edges (each course 3 plates up and 2 studs in) over a plain brick core with a 2-wide ridge cap; width made even and >= 4; height follows from the width; facing +x/-x turns the ridge. The model bounds now include block parts.
 - Real Gemini: 6 of 6 buildings (house, castle, fire station, cottage, barn, garage) valid, 3.7 AI calls and 39 s on average.
 - Tests: 337 unit (7 deliberate breakages caught), 83 server, 154/154 browser.
+
+## 2026-10-04: real trees, bushes, ears and horns
+- Units added: pine-small 2435, fruit-tree 3470, pine-large 3471, cypress 3778, bush 6064, cone-1 4589, round-1 3062b. `tree` picks the nearest real tree by height; `bush` is the real bush; `ear` is one real cone; `horn` is a column of real round bricks capped by a real cone, as tall as asked. The real clip-on horn pieces hang the wrong way when mounted on top of a head, so the stacked version is used (the dataset has no ear parts at all).
+- `tools/build-units.py` now lowers parts modelled standing up from their origin (trees, bushes) so every unit's top is at the origin; the table tests caught trees floating a full tree-height too high.
+- Showcase (real Gemini, 15 prompts): 15 of 15 valid, 3.8 AI calls and 25 s on average. Strong: buildings and scenes (cabin in a pine forest, farm 1,016 parts), vehicles. Weak: animal bodies (the rabbit is a tall white tower), which is the AI's layout, not the parts. `tools/showcase.py` builds the page.
+- Tests: 372 unit, 83 server, 154/154 browser.

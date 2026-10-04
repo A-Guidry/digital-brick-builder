@@ -1,16 +1,232 @@
 {
-  "_doc": "Real assemblies the app can place. 'anchor' is the main LDraw part; 'companions' are parts that ride on it (their exact offset and turn are MINED from the OMR models, nothing is typed in). class: 'hang' hangs under the body (a wheel holder), 'wall' fills an opening in a wall. colour: 'placed' = the colour the AI gives, 'accent' = its second colour, or a fixed colour id. baseFacing = which way the part points as stored. anchorY: 'center' or 'bottom' of the opening.",
-  "wheel": { "class": "hang", "anchor": "4488", "bl": "4488", "footprint": [2, 2, 1], "baseFacing": "+x", "body": "placed", "bodyDefault": "dark_gray",
-    "companions": [ { "id": "6014", "bl": "6014b", "colour": "light_gray" }, { "id": "6015", "bl": "6015", "colour": "black" } ] },
-  "window-2x2": { "class": "wall", "anchor": "60592", "bl": "60592", "baseFacing": "+z", "body": "placed", "bodyDefault": "white", "anchorY": "center",
-    "companions": [ { "id": "60601", "bl": "60601", "colour": "trans_light_blue" } ] },
-  "window-2x3": { "class": "wall", "anchor": "60593", "bl": "60593", "baseFacing": "+z", "body": "placed", "bodyDefault": "white", "anchorY": "center",
-    "companions": [ { "id": "60602", "bl": "60602", "colour": "trans_light_blue" } ] },
-  "window-4x3": { "class": "wall", "anchor": "60594", "bl": "60594", "footprint": [4, 1, 9], "baseFacing": "+z", "body": "placed", "bodyDefault": "white", "anchorY": "center", "companions": [] },
-  "windscreen": { "class": "wall", "studs": false, "anchor": "3823", "bl": "3823", "baseFacing": "+z", "body": "trans_light_blue", "anchorY": "center", "companions": [] },
-  "door": { "class": "wall", "anchor": "60596", "bl": "60596", "baseFacing": "+z", "body": "placed", "bodyDefault": "white", "anchorY": "bottom",
-    "companions": [ { "id": "60623", "bl": "60623", "colour": "accent", "accentDefault": "reddish_brown" } ] },
-  "slope-4": { "class": "block", "anchor": "3037", "bl": "3037", "baseFacing": "+z", "body": "placed", "bodyDefault": "red", "studs": "back", "companions": [] },
-  "slope-2": { "class": "block", "anchor": "3039", "bl": "3039", "baseFacing": "+z", "body": "placed", "bodyDefault": "red", "studs": "back", "companions": [] },
-  "slope-1": { "class": "block", "anchor": "3040", "bl": "3040", "baseFacing": "+z", "body": "placed", "bodyDefault": "red", "studs": "back", "companions": [] }
+ "_doc": "Real assemblies the app can place. 'anchor' is the main LDraw part; 'companions' are parts that ride on it (their exact offset and turn are MINED from the OMR models, nothing is typed in). class: 'hang' hangs under the body (a wheel holder), 'wall' fills an opening in a wall. colour: 'placed' = the colour the AI gives, 'accent' = its second colour, or a fixed colour id. baseFacing = which way the part points as stored. anchorY: 'center' or 'bottom' of the opening.",
+ "wheel": {
+  "class": "hang",
+  "anchor": "4488",
+  "bl": "4488",
+  "footprint": [
+   2,
+   2,
+   1
+  ],
+  "baseFacing": "+x",
+  "body": "placed",
+  "bodyDefault": "dark_gray",
+  "companions": [
+   {
+    "id": "6014",
+    "bl": "6014b",
+    "colour": "light_gray"
+   },
+   {
+    "id": "6015",
+    "bl": "6015",
+    "colour": "black"
+   }
+  ]
+ },
+ "window-2x2": {
+  "class": "wall",
+  "anchor": "60592",
+  "bl": "60592",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "white",
+  "anchorY": "center",
+  "companions": [
+   {
+    "id": "60601",
+    "bl": "60601",
+    "colour": "trans_light_blue"
+   }
+  ]
+ },
+ "window-2x3": {
+  "class": "wall",
+  "anchor": "60593",
+  "bl": "60593",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "white",
+  "anchorY": "center",
+  "companions": [
+   {
+    "id": "60602",
+    "bl": "60602",
+    "colour": "trans_light_blue"
+   }
+  ]
+ },
+ "window-4x3": {
+  "class": "wall",
+  "anchor": "60594",
+  "bl": "60594",
+  "footprint": [
+   4,
+   1,
+   9
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "white",
+  "anchorY": "center",
+  "companions": []
+ },
+ "windscreen": {
+  "class": "wall",
+  "studs": false,
+  "anchor": "3823",
+  "bl": "3823",
+  "baseFacing": "+z",
+  "body": "trans_light_blue",
+  "anchorY": "center",
+  "companions": []
+ },
+ "door": {
+  "class": "wall",
+  "anchor": "60596",
+  "bl": "60596",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "white",
+  "anchorY": "bottom",
+  "companions": [
+   {
+    "id": "60623",
+    "bl": "60623",
+    "colour": "accent",
+    "accentDefault": "reddish_brown"
+   }
+  ]
+ },
+ "slope-4": {
+  "class": "block",
+  "anchor": "3037",
+  "bl": "3037",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "red",
+  "studs": "back",
+  "companions": []
+ },
+ "slope-2": {
+  "class": "block",
+  "anchor": "3039",
+  "bl": "3039",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "red",
+  "studs": "back",
+  "companions": []
+ },
+ "slope-1": {
+  "class": "block",
+  "anchor": "3040",
+  "bl": "3040",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "red",
+  "studs": "back",
+  "companions": []
+ },
+ "pine-small": {
+  "class": "block",
+  "anchor": "2435",
+  "bl": "2435",
+  "footprint": [
+   2,
+   2,
+   12
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "green",
+  "studs": false,
+  "overhang": true,
+  "companions": []
+ },
+ "pine-large": {
+  "class": "block",
+  "anchor": "3471",
+  "bl": "3471",
+  "footprint": [
+   2,
+   2,
+   20
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "green",
+  "studs": false,
+  "overhang": true,
+  "companions": []
+ },
+ "fruit-tree": {
+  "class": "block",
+  "anchor": "3470",
+  "bl": "3470",
+  "footprint": [
+   2,
+   2,
+   18
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "green",
+  "studs": false,
+  "overhang": true,
+  "companions": []
+ },
+ "cypress": {
+  "class": "block",
+  "anchor": "3778",
+  "bl": "3778",
+  "footprint": [
+   2,
+   2,
+   35
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "dark_green",
+  "studs": false,
+  "overhang": true,
+  "companions": []
+ },
+ "bush": {
+  "class": "block",
+  "anchor": "6064",
+  "bl": "6064",
+  "footprint": [
+   2,
+   2,
+   14
+  ],
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "green",
+  "studs": false,
+  "overhang": true,
+  "companions": []
+ },
+ "cone-1": {
+  "class": "block",
+  "anchor": "4589",
+  "bl": "4589",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "light_gray",
+  "studs": false,
+  "companions": []
+ },
+ "round-1": {
+  "class": "block",
+  "anchor": "3062b",
+  "bl": "3062b",
+  "baseFacing": "+z",
+  "body": "placed",
+  "bodyDefault": "light_gray",
+  "studs": true,
+  "companions": []
+ }
 }

@@ -1,0 +1,14 @@
+// run via: cp tools/showcase-bom.test.ts.txt tests/zz_bom.test.ts && npx vitest run tests/zz_bom.test.ts && rm tests/zz_bom.test.ts
+import { it } from 'vitest'; import fs from 'node:fs';
+import { buildWithRepair } from '../src/repair'; import { partsList } from '../src/bricklink'; import { PARTS } from '../src/catalog';
+it('bom', async () => {
+  const dir = process.env.SHOW_DIR ?? '/tmp/eval/showcase', plain = new Set(PARTS.map(p => p.bl)), out: Record<string, unknown> = {};
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('-spec.json'))) {
+    const spec = JSON.parse(fs.readFileSync(`${dir}/${f}`, 'utf8'));
+    const r = await buildWithRepair({ rawText: JSON.stringify(spec) }, async () => { throw new Error('no ai'); }, { maxRounds: 1 });
+    const list = r.model ? partsList(r.model) : [];
+    out[f.replace('-spec.json', '')] = { name: spec.name, ok: r.ok, parts: r.model?.parts.length ?? 0, kinds: [...new Set((spec.features ?? []).map((x: { kind: string }) => x.kind))],
+      real: list.filter(l => !plain.has(l.bl)).map(l => ({ bl: l.bl, name: l.name, color: l.colorName, qty: l.qty })), plainParts: list.filter(l => plain.has(l.bl)).reduce((a, b) => a + b.qty, 0) };
+  }
+  fs.writeFileSync(`${dir}/bom.json`, JSON.stringify(out));
+}, 600000);

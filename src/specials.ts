@@ -6,7 +6,7 @@ import data from './specials.json';
 export type Facing = '+x' | '-x' | '+z' | '-z';
 export interface UnitPart { tag: 'body' | 'extra'; bl: string; name: string; colour: string | null; accentDefault?: string | null; positions: Float32Array }
 export interface UnitDef {
-  cls: 'hang' | 'wall' | 'block'; studs?: boolean | 'back'; footprint: [number, number, number]; baseFacing: Facing; anchorY: 'center' | 'bottom'; bodyDefault: string | null; bl: string;
+  cls: 'hang' | 'wall' | 'block'; studs?: boolean | 'back'; overhang?: boolean; footprint: [number, number, number]; baseFacing: Facing; anchorY: 'center' | 'bottom'; bodyDefault: string | null; bl: string;
   parts: { tag: string; bl: string; name: string; colour: string | null; accentDefault?: string | null; tris: string; n: number }[];
 }
 export const UNITS = data as unknown as Record<string, UnitDef>;
