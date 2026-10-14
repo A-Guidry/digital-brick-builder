@@ -22,12 +22,12 @@ server on the tailnet        ──http://100.126.162.57:11436/v1─────
 ```
 Settings (environment variables when installing): `GATEWAY_UPSTREAM` (default `http://127.0.0.1:11435`), `GATEWAY_ORIGINS` (comma list of allowed websites), `GATEWAY_PORT` (11436), `GATEWAY_HTTPS_PORT` (8443; Tailscale allows 443, 8443, 10000).
 
-Use it from an app: base URL `https://agt-studio-llm.tail46b2ff.ts.net:8443/v1` (OpenAI-compatible), any API key, model e.g. `qwen3.5:9b`. In Digital Brick Builder: AI settings, Local model, paste that URL.
+Use it from an app: base URL `https://agt-studio-llm.tail46b2ff.ts.net:8443/v1` (OpenAI-compatible), any API key, model e.g. `gemma4:26b`. In Digital Brick Builder: AI settings, Local model, paste that URL.
 
 Chrome asks once to allow the website to reach "local network" devices: choose Allow.
 
 ## Keep-warm, and if the model gets stuck
-The gateway keeps one model loaded (`GATEWAY_WARM_MODEL`, default `qwen3.5:9b`; empty turns it off) by re-asking Ollama every 4 minutes with a 30-minute keep-alive, so the first request after a quiet spell is fast (about 0.1 s instead of 30 to 60 s). It costs about 7 GB of memory while the Mac is on.
+The gateway keeps one model loaded (`GATEWAY_WARM_MODEL`, default `gemma4:26b`; empty turns it off) by re-asking Ollama every 4 minutes with a 30-minute keep-alive, so the first request after a quiet spell is fast (about 0.1 s instead of 30 to 60 s). It costs about 18 GB of memory while the Mac is on.
 
 Ollama can occasionally wedge while unloading a model: `ollama ps` shows **Stopping…** for minutes and even tiny requests take a minute or more. The fix is to end only the model runner (Ollama starts a fresh one):
 ```
