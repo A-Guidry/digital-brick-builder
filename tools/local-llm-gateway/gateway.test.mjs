@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { loadConfig, createGateway, originAllowed, startWarmer } from './gateway.mjs';
+import { loadConfig, createGateway, originAllowed, startWarmer, targetFor } from './gateway.mjs';
 
 const SITE = 'https://brickbuilder.arcwel.ai';
 /** Fake Ollama: 403s any request that carries an Origin it does not know (like the real one), streams chat, records what it saw. */
@@ -110,5 +110,69 @@ test('invalid WARM_EVERY_MS is refused at startup', () => { assert.throws(() => 
 test('health tells apps which model is kept loaded (only when keep-warm is on)', async () => {
   const g = await start({ WARM_MODEL: 'qwen-test', WARM_EVERY_MS: '100000' });
   assert.deepEqual(await (await fetch(g.base + '/gateway/health', { headers: { origin: SITE } })).json(), { ok: true, upstream: `http://127.0.0.1:${g.o.port}`, warm: 'qwen-test' });
+  await g.close();
+});
+
+/** Fake speech server: answers /v1/audio/* and records what it saw. */
+async function fakeSpeech() {
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    const chunks = []; req.on('data', c => chunks.push(c)); req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      seen.push({ url: req.url, method: req.method, headers: req.headers, body });
+      if (req.url.startsWith('/v1/audio/speech')) { res.writeHead(200, { 'content-type': 'audio/mpeg' }); return res.end(Buffer.from([0xff, 0xfb, 0x90, 0x00])); }
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ text: `got ${body.length} bytes` }));
+    });
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  return { seen, port: srv.address().port, close: () => new Promise(r => { srv.closeAllConnections?.(); srv.close(r); }) };
+}
+
+test('speech: /v1/audio/* goes to the speech server, everything else still goes to Ollama', async () => {
+  const sp = await fakeSpeech(); const g = await start({ SPEECH_UPSTREAM: `http://127.0.0.1:${sp.port}` });
+  const tts = await fetch(g.base + '/v1/audio/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"model":"kokoro","input":"hi","voice":"af_heart"}' });
+  assert.equal(tts.status, 200); assert.equal(tts.headers.get('content-type'), 'audio/mpeg');
+  assert.deepEqual([...new Uint8Array(await tts.arrayBuffer())], [0xff, 0xfb, 0x90, 0x00]);
+  assert.equal((await fetch(g.base + '/v1/audio/voices?model=kokoro')).status, 200);
+  assert.equal((await fetch(g.base + '/v1/models')).status, 200);
+  assert.deepEqual(sp.seen.map(x => x.url), ['/v1/audio/speech', '/v1/audio/voices?model=kokoro']);
+  assert.deepEqual(g.o.seen.map(x => x.url), ['/v1/models']);
+  await g.close(); await sp.close();
+});
+test('speech: a multipart upload reaches the speech server byte for byte', async () => {
+  const sp = await fakeSpeech(); const g = await start({ SPEECH_UPSTREAM: `http://127.0.0.1:${sp.port}` });
+  const audio = new Uint8Array(400_000).map((_, i) => i % 251);
+  const form = new FormData(); form.append('model', 'whisper'); form.append('response_format', 'json');
+  form.append('file', new Blob([audio], { type: 'audio/mp4' }), 'speech.m4a');
+  const r = await fetch(g.base + '/v1/audio/transcriptions', { method: 'POST', body: form });
+  assert.equal(r.status, 200);
+  const sent = sp.seen[0]; assert.match(sent.headers['content-type'], /^multipart\/form-data; boundary=/);
+  assert.ok(sent.body.includes(Buffer.from(audio)), 'the audio bytes arrived intact');
+  await g.close(); await sp.close();
+});
+test('speech: website rules apply the same way, and only the exact /v1/audio/ prefix is routed', async () => {
+  const sp = await fakeSpeech(); const g = await start({ SPEECH_UPSTREAM: `http://127.0.0.1:${sp.port}` });
+  assert.equal((await fetch(g.base + '/v1/audio/speech', { method: 'POST', headers: { origin: 'https://evil.example' }, body: '{}' })).status, 403);
+  const ok = await fetch(g.base + '/v1/audio/voices', { headers: { origin: SITE } });
+  assert.equal(ok.headers.get('access-control-allow-origin'), SITE);
+  const cfg = loadConfig({ SPEECH_UPSTREAM: 'http://127.0.0.1:8810' });
+  assert.equal(targetFor(cfg, '/v1/audiox/speech').name, 'ollama');
+  assert.equal(targetFor(cfg, '/v1/audio').name, 'ollama');
+  assert.equal(targetFor(cfg, '/v1/audio/transcriptions?x=1').name, 'speech');
+  assert.equal(sp.seen.length, 1);
+  await g.close(); await sp.close();
+});
+test('speech: off unless SPEECH_UPSTREAM is set, so /v1/audio/* keeps going to Ollama', async () => {
+  const g = await start();
+  await fetch(g.base + '/v1/audio/speech', { method: 'POST', body: '{}' });
+  assert.deepEqual(g.o.seen.map(x => x.url), ['/v1/audio/speech']);
+  assert.equal(targetFor(loadConfig({}), '/v1/audio/speech').name, 'ollama');
+  await g.close();
+});
+test('speech: a dead speech server gives its own clear 502 while chat keeps working', async () => {
+  const g = await start({ SPEECH_UPSTREAM: 'http://127.0.0.1:1' });
+  const r = await fetch(g.base + '/v1/audio/speech', { method: 'POST', body: '{}' });
+  assert.equal(r.status, 502); assert.match((await r.json()).error, /speech server on this Mac/);
+  assert.equal((await fetch(g.base + '/v1/models')).status, 200);
   await g.close();
 });

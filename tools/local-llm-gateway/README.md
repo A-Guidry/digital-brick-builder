@@ -21,6 +21,10 @@ server on the tailnet        ──http://100.126.162.57:11436/v1─────
 ./local-llm-gateway restart | logs | uninstall [--dry-run]
 ```
 Settings (environment variables when installing): `GATEWAY_UPSTREAM` (default `http://127.0.0.1:11435`), `GATEWAY_ORIGINS` (comma list of allowed websites), `GATEWAY_PORT` (11436), `GATEWAY_HTTPS_PORT` (8443; Tailscale allows 443, 8443, 10000).
+`GATEWAY_SPEECH_UPSTREAM` (empty = off): a local speech server, for example `http://127.0.0.1:8810`. When it is set, requests under `/v1/audio/` (`/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/audio/voices`) go there instead of to Ollama, through the same addresses and the same website rules. Everything else still goes to Ollama.
+
+## Speech (optional)
+With `GATEWAY_SPEECH_UPSTREAM` set, the same base URLs also serve speech: `https://agt-studio-llm.tail46b2ff.ts.net:8443/v1` and `http://100.126.162.57:11436/v1`. The speech server needs no tailnet port of its own, which matters because the tailnet rules let the VPS reach only 11436, 8443 and 8787 on this Mac. If the speech server is down, `/v1/audio/*` answers 502 with "The speech server on this Mac is not answering" while chat keeps working.
 
 Use it from an app: base URL `https://agt-studio-llm.tail46b2ff.ts.net:8443/v1` (OpenAI-compatible), any API key, model e.g. `gemma4:26b`. In Digital Brick Builder: AI settings, Local model, paste that URL.
 
