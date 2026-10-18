@@ -4,10 +4,13 @@
 //  - answers browser permission checks (CORS + Private Network Access) only for the allowed websites
 //  - streams responses straight through (chat streaming works)
 //  - optionally keeps one model loaded in memory (WARM_MODEL), so the first request after a quiet spell is not slow
+//  - optionally sends /v1/audio/* (speech and transcription) to a local speech server (SPEECH_UPSTREAM), so it is
+//    reachable on the same tailnet addresses as the model without opening another port
 // It adds no password: exposure is controlled by what `tailscale serve` publishes (tailnet only, never public).
 import http from 'node:http';
 import { pathToFileURL } from 'node:url';
 
+const SPEECH_PREFIX = '/v1/audio/';
 const HOP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'host', 'origin', 'referer', 'content-length']);
 
 export function loadConfig(env) {
@@ -18,7 +21,8 @@ export function loadConfig(env) {
   if (allowed.includes('*')) throw new Error('ALLOWED_ORIGINS must not contain *');
   const warmEvery = Number(env.WARM_EVERY_MS || 240_000);
   if (!Number.isFinite(warmEvery) || warmEvery < 1000) throw new Error('WARM_EVERY_MS must be at least 1000');
-  return { port, host: env.HOST || '127.0.0.1', upstream, allowed, localhostOk: env.ALLOW_LOCALHOST !== '0',
+  const speech = (env.SPEECH_UPSTREAM || '').trim() ? new URL(env.SPEECH_UPSTREAM.trim()) : null;
+  return { port, host: env.HOST || '127.0.0.1', upstream, speech, allowed, localhostOk: env.ALLOW_LOCALHOST !== '0',
     warmModel: (env.WARM_MODEL || '').trim(), warmEvery, warmKeep: env.WARM_KEEP_ALIVE || '30m' };
 }
 
@@ -26,6 +30,12 @@ export function originAllowed(cfg, origin) {
   if (!origin) return true;                                   // not a browser (curl, scripts, other servers)
   if (cfg.allowed.includes(origin)) return true;
   return cfg.localhostOk && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(origin);
+}
+
+/** Where a request goes: the speech server for /v1/audio/* when one is configured, Ollama for everything else. */
+export function targetFor(cfg, url) {
+  const path = (url || '').split('?')[0];
+  return cfg.speech && path.startsWith(SPEECH_PREFIX) ? { up: cfg.speech, name: 'speech' } : { up: cfg.upstream, name: 'ollama' };
 }
 
 export function createGateway(cfg, { log = () => {} } = {}) {
@@ -52,13 +62,17 @@ export function createGateway(cfg, { log = () => {} } = {}) {
     }
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP.has(k)) headers[k] = v;
-    const up = http.request({ host: cfg.upstream.hostname, port: cfg.upstream.port, path: req.url, method: req.method, headers }, ur => {
+    const target = targetFor(cfg, req.url);
+    const up = http.request({ host: target.up.hostname, port: target.up.port, path: req.url, method: req.method, headers }, ur => {
       const out = {};
       for (const [k, v] of Object.entries(ur.headers)) if (!HOP.has(k) && !k.startsWith('access-control-')) out[k] = v;
       res.writeHead(ur.statusCode || 502, { ...out, ...cors });
       ur.pipe(res); ur.on('end', () => done(ur.statusCode));
     });
-    up.on('error', () => { if (!res.headersSent) reply(502, { error: 'The model server on this Mac is not answering. Is Ollama running?' }); else res.destroy(); });
+    const down = target.name === 'speech'
+      ? 'The speech server on this Mac is not answering. Is the local-speech agent running?'
+      : 'The model server on this Mac is not answering. Is Ollama running?';
+    up.on('error', () => { if (!res.headersSent) reply(502, { error: down }); else res.destroy(); });
     res.on('close', () => up.destroy());
     req.pipe(up);
   });
@@ -92,7 +106,7 @@ function probe(cfg) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   let cfg; try { cfg = loadConfig(process.env); } catch (e) { console.error(e.message); process.exit(1); }
   createGateway(cfg, { log: l => console.log(l) }).listen(cfg.port, cfg.host, () => {
-    console.log(`local-llm-gateway ${cfg.host}:${cfg.port} -> ${cfg.upstream.origin}; websites: ${cfg.allowed.join(', ')}${cfg.localhostOk ? ' + localhost' : ''}${cfg.warmModel ? '; keeping ' + cfg.warmModel + ' loaded' : ''}`);
+    console.log(`local-llm-gateway ${cfg.host}:${cfg.port} -> ${cfg.upstream.origin}${cfg.speech ? ` (+ ${SPEECH_PREFIX}* -> ${cfg.speech.origin})` : ''}; websites: ${cfg.allowed.join(', ')}${cfg.localhostOk ? ' + localhost' : ''}${cfg.warmModel ? '; keeping ' + cfg.warmModel + ' loaded' : ''}`);
     startWarmer(cfg, { log: l => console.log(l) });
   });
 }
